@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<style>
+.unselect {
+  position: absolute;
+  user-select: none;
+  -moz-user-select: none;
+  -khtml-user-select: none;
+  -webkit-user-select: none;
+  -o-user-select: none;
+  font-family:monospace;
+}
+</style>
+<body>
+  <div id="background" onclick="clicked_background()" class="unselect" style="left:0px;top:0px;width:100%;height:100%;background-color:white;z-index:0;text-align:center;font-family:monospace;font-size:30px;"></div>
+  <div id="output" class="unselect" style="left:30%;width:40%;top:40%;height:20%;background-color:white;text-align:center;font-family:monospace;font-size:80px;z-index:1">Test 1</div>
+  <div id="start_button" onclick="I_understand()" class="unselect" style="left:40%;width:20%;top:60%;height:10%;background-color:green;border-radius:20px;z-index:1">
+    <div style="position:absolute;top:28%;width:100%;font-family:monospace;font-size:30px;color:white;text-align:center">Start</div>
+  </div>
+  <input id="gender" class="unselect" style="left:30%;width:40%;top:71%;z-index:1;font-size:25px" placeholder="male/female/other"></input>
+  <input id="native" class="unselect" style="left:30%;width:40%;top:78%;z-index:1;font-size:25px" placeholder="native/non-native (english speaker)"></input>
+<script>
+var listLength = 15;
+var wordTime = 200;
+var blankTime = 100;
+
+// native speaker
+// gender
+
+var onoff = [];
+for (var i = 0; i < listLength; i++){
+  onoff[i] = false;
+  var div = document.createElement("div");
+  div.id = i;
+  div.className = "unselect";
+  div.addEventListener("click", function () { word_clicked(this.id); });
+  div.style.left = "42.5%";
+  div.style.width = "15%";
+  div.style.height = (90 / listLength) + "%";
+  div.style.top = (5 / listLength + i * 100 / listLength) + "%";
+  div.style.fontFamily = "monospace";
+  div.style.fontSize = "30px";
+  div.style.backgroundColor = "gray";
+  div.style.color = "white";
+  div.style.borderRadius = "10px";
+  div.style.display = "none";
+  div.style.zIndex = 3;
+  div.style.textAlign = "center";
+  document.body.appendChild(div);
+}
+
+var concreteList = ['human','ginger','olive','rubber','liquid','canine','lilac','orange','wooden','panty','female','blonde','thorn','tulip','kitty','berry','china','knight','shore','teddy','basil','stork','baker','cliff','poppy','crane','flint','robin','frost','jersey','apple','bagel','banana','basket','bedpan','boots','braces','cactus','camera','carrot','carton','clock','cobra','cookie','donkey','eagle','eggnog','elbow','eyelid','finger','flower','flute','grape','gravel','horse','hotdog','house','hubcap','jeans','ladder','lemon','mango','parrot','pillow','pizza','plank','quilt','snake','sponge','stairs','tiger','tomato','tongs','turtle','walrus','water','whisky','arrow','bunny','cement','cider','cotton','easel','ferret','flour','glove','gravy','maggot','mirror','moose','pastry','poncho','raisin','salad','scarf','shovel','spider','throat','toilet'];
+var abstractList = ['catchy','clever','humane','legal','annual','galore','proper','insane','sacred','unable','likely','untold','smart','stupid','wiser','finite','humble','subtle','daring','lowly','godly','gutsy','loyal','relent','unwise','groovy','crappy','grand','unseen','honest','absurd','utmost','eerie','overt','simple','superb','unfair','viable','worse','weird','ironic','vague','amazed','solemn','unholy','unreal','suave','aloof','divine','normal','ideal','risky','unjust','meekly','solely','indeed','quite','always','barely','surely','anyway','hereby','boldly','almost','where','please','rarely','oddly','hardly','truly','dearly','humbly','never','openly','awhile','subtly','amiss','maybe','anyhow','rather','justly','really','merely','hence','lately','seldom','enough','while','unless','except','since','until','though','whose','grace','revere','logics','regard','powers','stigma'];
+
+function downloadFile(filename, text) {
+  var element = document.createElement('a');
+  element.setAttribute('href', 'data:text/plain;charset=utf-8,' + encodeURIComponent(text));
+  element.setAttribute('download', filename);
+  element.style.display = 'none';
+  document.body.appendChild(element);
+  element.click();
+  document.body.removeChild(element);
+}
+
+function execute_test(show_break = true, index = 0){
+  if (!show_break && index == listLength){
+    document.getElementById("output").innerHTML = "Test 2";
+    test = !test;
+    document.getElementById("start_button").style.width = "20%";
+    document.getElementById("start_button").style.left = "40%";
+    document.getElementById("start_button").children[0].innerHTML = "Start";
+    document.getElementById("background").style.backgroundColor = "black";
+    document.getElementById("background").style.zIndex = 2;
+    return;
+  }
+  if (show_break){
+    document.getElementById("output").innerHTML = "";
+  } else {
+    document.getElementById("output").innerHTML = currentList[index++];
+  }
+  setTimeout(function () { execute_test(!show_break, index); }, show_break ? ((index == listLength) ? 4 * blankTime : blankTime) : wordTime);
+}
+function count_down(n = 600){
+  var x = 10 - n / 60;
+  document.getElementById("start_button").style.width = (20 - 2 * x) + "%";
+  document.getElementById("start_button").style.left = (40 + x) + "%";
+  if (n == 0){
+    document.getElementById("output").innerHTML = "";
+    execute_test();
+    return;
+  }
+  if (n % 200 == 0){
+    document.getElementById("output").innerHTML = n / 200;
+  }
+  if (n) setTimeout(function () { count_down(n - 2); }, 9);
+}
+
+function extract_array(){
+  currentList = [];
+  if (test){
+    for (var i = 0; i < listLength; i++) currentList.push(concreteList.splice(Math.floor(Math.random() * concreteList.length), 1)[0]);
+  } else {
+    for (var i = 0; i < listLength; i++) currentList.push(abstractList.splice(Math.floor(Math.random() * abstractList.length), 1)[0]);
+  }
+}
+
+var test = Math.random() > 0.5;
+var currentList = [];
+var data = "";
+var tests_done = 0;
+function I_understand(){
+  var gender = document.getElementById("gender").value;
+  var native = document.getElementById("native").value;
+  if (tests_done == 0 && (gender == "" || native == "")) return;
+  document.getElementById("start_button").children[0].innerHTML = "";
+  extract_array();
+  count_down();
+  if (tests_done == 0){
+    data += "gender: " + gender + "\nnative: " + native + "\n\n";
+    document.getElementById("gender").value = "";
+    document.getElementById("native").valuue = "";
+    document.getElementById("gender").style.display = "none";
+    document.getElementById("native").style.display = "none";
+  }
+}
+
+function clicked_background(){
+  var element = document.getElementById("background");
+  if (element.style.zIndex == 2){
+    if (element.style.backgroundColor == "black"){
+      element.style.backgroundColor = "white";
+      element.innerHTML = "";
+      for (var i = 0; i < listLength; i++){
+        document.getElementById(i).style.display = "block";
+        document.getElementById(i).innerHTML = currentList[i];
+      }
+    } else {
+      var score = 0;
+      for (var i = 0; i < listLength; i++){
+        document.getElementById(i).style.display = "none";
+        document.getElementById(i).style.backgroundColor = "gray";
+        score += onoff[i] ? 1 : 0;
+        onoff[i] = false;
+      }
+      element.style.zIndex = 0;
+      element.innerHTML = "";
+      data += (test ? "concrete: " : "abstract: ") + score + '\n';
+      if ((++tests_done) == 2){
+        downloadFile("BSStest.txt", data);
+      }
+    }
+  }
+}
+
+function word_clicked(id){
+  onoff[id * 1] = !onoff[id * 1];
+  document.getElementById(id).style.backgroundColor = onoff[id * 1] ? "green" : "gray";
+}
+
+</script>
+</body>
+</html>
