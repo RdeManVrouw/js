@@ -141,11 +141,16 @@ function clicked_background(){
         document.getElementById(i).style.display = "none";
         document.getElementById(i).style.backgroundColor = "gray";
         score += onoff[i] ? 1 : 0;
-        onoff[i] = false;
       }
       element.style.zIndex = 0;
       element.innerHTML = "";
       data += (test ? "concrete: " : "abstract: ") + score + '\n';
+      data += "words correct: ";
+      for (var i = 0; i < listLength; i++){
+        if (onoff[i]) data += currentList[i] + " ";
+        onoff[i] = false;
+      }
+      data += "\n\n";
       if ((++tests_done) == 2){
         downloadFile("BSStest.txt", data);
       }
