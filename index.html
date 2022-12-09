@@ -22,8 +22,10 @@
   <input id="education" class="unselect" style="left:30%;width:40%;top:85%;z-index:1;font-size:25px" placeholder="1/2/3 or higher year"></input>
 <script>
 var listLength = 15;
-var wordTime = 2000;
+var wordTime = 20;
 var blankTime = 100;
+
+var dataDict = { gender: null, year: 0, native: null, num_conc: 0, num_abst: 0, words_conc: "", words_abst: ""};
 
 // native speaker
 // gender
@@ -66,7 +68,6 @@ function downloadFile(filename, text) {
 function execute_test(show_break = true, index = 0){
   if (!show_break && index == listLength){
     document.getElementById("output").innerHTML = "Test 2";
-    test = !test;
     document.getElementById("start_button").style.width = "20%";
     document.getElementById("start_button").style.left = "40%";
     document.getElementById("start_button").children[0].innerHTML = "Start";
@@ -119,6 +120,9 @@ function I_understand(){
   count_down();
   if (tests_done == 0){
     data += "gender: " + gender + "\nnative: " + native + "\nyear: " + education + "\n\n";
+    dataDict["gender"] = gender;
+    dataDict["native"] = native;
+    dataDict["year"] = education;
     document.getElementById("gender").style.display = "none";
     document.getElementById("native").style.display = "none";
     document.getElementById("education").style.display = "none";
@@ -144,16 +148,28 @@ function clicked_background(){
       }
       element.style.zIndex = 0;
       element.innerHTML = "";
-      data += (test ? "concrete: " : "abstract: ") + score + '\n';
+      if (test){
+        data += "concrete: " + score + "\n";
+        dataDict["num_conc"] = score;
+      } else {
+        data += "abstract: " + score + "\n";
+        dataDict["num_abst"] = score;
+      }
       data += "words correct: ";
       for (var i = 0; i < listLength; i++){
-        if (onoff[i]) data += currentList[i] + " ";
+        if (onoff[i]){
+          dataDict[test ? "words_conc" : "words_abst"] += currentList[i] + " ";
+          data += currentList[i] + " ";
+        }
         onoff[i] = false;
       }
       data += "\n\n";
       if ((++tests_done) == 2){
+        data += "To copy into Excel:\n";
+        data += dataDict["gender"]+"\t"+dataDict["year"]+"\t"+dataDict["native"]+"\t"+dataDict["num_conc"]+"\t"+dataDict["num_abst"]+"\t"+dataDict["words_conc"]+"\t"+dataDict["words_abst"];
         downloadFile("BSStest.txt", data);
       }
+      test = !test;
     }
   }
 }
