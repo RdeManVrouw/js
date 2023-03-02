@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html>
+<body style="background-color:#282C34">
+  <input autofocus id="input" type="text" spellcheck="false" cols="50" style="position:absolute;left:50px;border:none;top:50px;outline-width:0px;font-size:20px;font-family:monospace" oninput="edited()"></input>
+  <canvas id="map" style="position:absolute;width:800px;top:50px;height:600px;left:430px;z-index:-1;border:2px solid white"></canvas>
+  <select id="language" style="position:absolute;left:300px;border:none;top:50px;outline-width:0px;font-size:20px;font-family:monospace" oninput="edited()">
+    <option value="classic">classic</option>
+    <option value="FDE">FDE</option>
+    <option value="K3">K3</option>
+    <option value="LP">LP</option>
+  </select>
+  <p id="text_output" style="position:absolute;left:50px;border:none;top:100px;font-size:20px;font-family:monospace;color:white"></p>
+<script>
+var canvas = document.getElementById("map");
+canvas.width = 1600;
+canvas.height = 1200;
+var ctx = canvas.getContext("2d");
+/*
+<atom> := 'a' | ... | 'z'
+<binary_operator> := '\u2227' | '\u2228' | '\u2192'
+<not> := '\u00AC'
+<term> := [ <not> ] (<atom> | '(' <wff> ')')
+<wff> :=  <term> [ <binary_operator> <term> ]
+<inference> := (<wff> [ ',' <wff> ] '\u22A2' <wff>) | ('\u22A2' <wff>)
+*/
+var operators = ['\u2227', '\u2228', '\u2192', '\u2194', '\u22A2', '\u00AC']; // AND, OR, IMP, BI, INF, NOT
+for (var i = 0; i < operators.length; i++){
+  var div = document.createElement("div");
+  div.style = "position:absolute;top:80px;height:30px;width:50px;background-color:gray;font-size:20px;font-family:monospace;text-align:center";
+  div.style.left = (50 + 60 * i) + "px";
+  div.innerHTML = operators[i];
+  div.addEventListener("click", function () { klik(this.innerHTML); }, false);
+  document.body.appendChild(div);
+}
+Array.prototype.Copy = function (){
+  var output = [];
+  for (var i = 0; i < this.length; i++) output.push(this[i].Copy());
+  return output;
+}
+class Tableau {
+  constructor(language = "classic", head){ // classic, FDE, K3, LP, L3, RM3
+    this.language = language;
+    this.head = head;
+  }
+
+  isClosed(pointer = this.head){
+    if (!pointer.closed) console.log(pointer.tostring(this.language));
+    if (!pointer.closed && pointer.children.length == 0) return false;
+    for (var i = 0; i < pointer.children.length; i++){
+      if (!this.isClosed(pointer.children[i])) return false;
+    }
+    return true;
+  }
+  checkEverything(pointer = this.head){
+    if (pointer.parent != undefined && this.makesContradiction(pointer.parent, pointer)){
+      pointer.closed = true;
+      return;
+    }
+    for (var i = 0; i < pointer.children.length; i++) this.checkEverything(pointer.children[i]);
+  }
+  makesContradiction(current_expr, expr1){
+    var node1 = expr1.head;
+    var node2 = current_expr.head;
+    if (this.language == "classic" || this.language == "K3"){ // A,+ and ¬A,+
+      if (current_expr.plus && expr1.plus){
+        if (node1.type == 2 && node1.children[0].type != 2 && node2.type != 2 && Node.Equals(node1.children[0], node2)) return true;
+        if (node2.type == 2 && node2.children[0].type != 2 && node1.type != 2 && Node.Equals(node2.children[0], node1)) return true;
+      }
+    }
+    if (this.language == "K3" || this.language == "LP" || this.language == "FDE"){ // A,+ and A,-
+      if (current_expr.plus != expr1.plus && Node.Equals(node1, node2)) return true;
+    }
+    if (this.language == "LP"){ // A,- and ¬A,-
+      if (!current_expr.plus && !expr1.plus){
+        if (node1.type == 2 && node1.children[0].type != 2 && node2.type != 2 && Node.Equals(node1.children[0], node2)) return true;
+        if (node2.type == 2 && node2.children[0].type != 2 && node1.type != 2 && Node.Equals(node2.children[0], node1)) return true;
+      }
+    }
+    if (current_expr.parent == undefined) return false;
+    return this.makesContradiction(current_expr.parent, expr1);
+  }
+  solve(pointer = this.head, rules = [], index = 0){
+    if (pointer.parent != undefined && this.makesContradiction(pointer.parent, pointer)){
+      pointer.closed = true;
+      return;
+    }
+    if (!pointer.used){
+      var temp = this.readRule(pointer);
+      if (temp != null) rules.push(temp);
+      pointer.used = true;
+    }
+    if (pointer.children.length == 0){
+      if (index >= rules.length) return;
+      for (var i = 0; i < rules[index].length; i++){
+        pointer.children[i] = rules[index][i].Copy();
+        pointer.children[i].parent = pointer;
+      }
+      for (var i = 0; i < rules[index].length; i++) this.solve(pointer.children[i], rules.Copy(), index + 1);
+      return;
+    } else if (pointer.children.length == 1){
+      this.solve(pointer.children[0], rules, index);
+      return;
+    } else {
+      for (var i = 0; i < pointer.children.length; i++) this.solve(pointer.children[i], rules.Copy(), index);
+      return;
+    }
+  }
+
+  applyRule(expression, l, r){
+    var hasNegative;
+    var head = (hasNegative = expression.head.type == 2) ? expression.head.children[0] : expression.head;
+    if (head.children.length == 0) return null;
+    l.i = head.children[0].Copy();
+    r.i = head.children[1].Copy();
+    var operator;
+    for (operator = 0; operators[operator] != head.name; operator++);
+    if (operator == 4) return null;
+    if (this.language == "classic"){
+      if (hasNegative){
+        return [[["¬A"], ["¬B"]], [["¬A", "¬B"]], [["A", "¬B"]], [["A", "¬B"], ["¬A", "B"]]][operator];
+      } else {
+        return [[["A","B"]], [["A"], ["B"]], [["¬A"], ["B"]], [["A","B"], ["¬A","¬B"]]][operator];
+      }
+    } else if (this.language == "FDE" || this.language == "K3" || this.language == "LP"){
+      if (expression.plus){
+        if (hasNegative){ // AND, OR, IMP, BI
+          return [[["¬A∨¬B,+"]], [["¬A∧¬B,+"]], [["¬(¬A∨B),+"]], [["¬((A→B)∧(B→A)),+"]]][operator];
+        } else {
+          return [[["A,+", "B,+"]], [["A,+"], ["B,+"]], [["¬A∨B,+"]], [["(A→B)∧(B→A),+"]]][operator];
+        }
+      } else {
+        if (hasNegative){
+          return [[["¬A∨¬B,-"]], [["¬A∧¬B,-"]], [["¬(¬A∨B),-"]], [["¬((A→B)∧(B→A)),-"]]][operator];
+        } else {
+          return [[["A,-"], ["B,-"]], [["A,-", "B,-"]], [["¬A∨B,-"]], [["(A→B)∧(B→A),-"]]][operator];
+        }
+      }
+    } else if (this.language == "LP"){
+
+    } else if (this.language == "L3"){
+
+    } else if (this.language == "RM3"){
+
+    }
+    return null;
+  }
+  readRule(expression){
+    if (expression.head.type == 2 && expression.head.children[0].type == 2) return [new Expression(expression.head.children[0].children[0].Copy(), expression.plus)];
+    var output = [];
+    var left = new Index(), right = new Index();
+    var structure = this.applyRule(expression, left, right);
+    if (structure == null) return null;
+    for (var i = 0; i < structure.length; i++){
+      output[i] = Expression.fromRule(structure[i][0], left.i, right.i);
+      if (structure[i].length > 1){
+        output[i].children[0] = Expression.fromRule(structure[i][1], left.i, right.i);
+        output[i].children[0].parent = output[i];
+      }
+    }
+    return output;
+  }
+
+  static fromInference(eq, lan){
+    var output = new Expression(eq.children[0]);
+    if (eq.children.length == 1){
+      if (lan == "classic"){
+        output.head = new Node([output.head], "¬", 2);
+      } else {
+        output.plus = false;
+      }
+      return new Tableau(lan, output);
+    }
+    var temp = output;
+    var i;
+    for (i = 1; i < eq.children.length - 1; i++){
+      output.children[0] = new Expression(eq.children[i]);
+      output.children[0].parent = output;
+      output = output.children[0];
+    }
+    output.children = [new Expression(eq.children[i])];
+    if (lan == "classic"){
+      output.children[0].head = new Node([output.children[0].head], "¬", 2);
+    } else {
+      output.children[0].plus = false;
+    }
+    output.children[0].parent = output;
+    return new Tableau(lan, temp);
+  }
+
+  static isValid(tableau){
+    tableau.solve();
+    tableau.head.setParents();
+    tableau.checkEverything();
+    return tableau.isClosed();
+  }
+}
+class Expression {
+  constructor(head, plus = true){
+    this.head = head;
+    this.plus = plus;
+    this.used = false;
+    this.closed = false;
+    this.children = [];
+    this.parent;
+    this.drawWidth;
+  }
+
+  numHaveNoParent(){
+    var sum = this.parent == undefined;
+    if (this.parent != undefined) console.log(this.tostring(), this.parent.tostring());
+    for (var i = 0; i < this.children.length; i++) sum += this.children[i].numHaveNoParent();
+    return sum;
+  }
+  tostring(lan = "classic"){
+    return this.head.tostring() + ((lan == "classic") ? "" : ("," + (this.plus ? "+" : "-")));
+  }
+  setParents(){
+    for (var i = 0; i < this.children.length; i++) this.children[i].parent = this;
+    for (var i = 0; i < this.children.length; i++) this.children[i].setParents();
+  }
+  Copy(){
+    var output = new Expression();
+    output.plus = this.plus;
+    output.used = this.used;
+    output.closed = this.closed;
+    output.drawWidth = this.drawWidth;
+    output.parent = undefined;
+    output.head = this.head.Copy();
+    output.children = [];
+    for (var i = 0; i < this.children.length; i++) output.children[i] = this.children[i].Copy();
+    for (var i = 0; i < this.children.length; i++) output.children[i].parent = this;
+    return output;
+  }
+
+  updateDrawWidth(r, lan){
+    if (this.children.length == 0) return this.tostring(lan).length * r * 0.2;
+    var max = -Infinity;
+    for (var i = 0; i < this.children.length; i++) max = Math.max(max, this.children[i].updateDrawWidth(r, lan));
+    return this.drawWidth = (this.children.length - 1) * 30 + this.children.length * max;
+  }
+  draw(lan, r = 20, x = canvas.width * 0.5, y = 20 + r, depth = 0){
+    if (depth == 0) this.updateDrawWidth(r, lan);
+    if (!this.closed && this.children.length){
+      var step = (this.children.length == 1) ? 0 : (this.drawWidth / (this.children.length - 1) + 30);
+      var left = x - 0.5 * step;
+      for (var i = 0; i < this.children.length; i++){
+        if (this.children.length > 1){
+          ctx.beginPath();
+          ctx.strokeStyle = "white";
+          ctx.lineWidth = 2;
+          ctx.lineJoin = "round";
+          ctx.moveTo(x, y);
+          ctx.lineTo(left, y);
+          ctx.lineTo(left, y + r * 1.4);
+          ctx.moveTo(left, y + r * 1.4);
+          ctx.closePath();
+          ctx.stroke();
+        }
+        this.children[i].draw(lan, r, left, y + r * 1.4, 1);
+        left += step;
+      }
+    }
+    var str = this.tostring(lan);
+    ctx.fillStyle = "#282C34";
+    ctx.fillRect(x - 0.3 * r * str.length, y - 0.8 * r, 0.6 * r * str.length, r);
+    ctx.font = r + "px monospace";
+    ctx.fillStyle = "white";
+    ctx.textAlign = "center";
+    ctx.fillText(str, x, y);
+    if (this.closed){
+      ctx.font = r + "px monospace";
+      ctx.fillStyle = "white";
+      ctx.textAlign = "center";
+      ctx.fillText("x", x, y + r * 1.4);
+    }
+  }
+
+  static fromRule(str, left, right){
+    var node = new Node(), ind = new Index();
+    Node.acceptWFF(str, ind, node);
+    node = node.Evaluate("A", left).Evaluate("B", right);
+    var expr = new Expression(node);
+    if (ind.i != str.length) expr.plus = str[ind.i + 1] == "+";
+    return expr;
+  }
+}
+class Node {
+  constructor(children = [], name, type){
+    this.name = name;  // name of the atom or operator
+    this.type = type;  // atom, binary_operator or NOT
+    this.children = children;
+  }
+
+  static acceptAtom(str, index, item){
+    if ((str.charCodeAt(index.i) >= 97 && str.charCodeAt(index.i) <= 122) || str[index.i] == "A" || str[index.i] == "B"){
+      item.name = str[index.i++];
+      item.type = 0;
+      return true;
+    }
+    return false;
+  }
+  static acceptBinaryOperator(str, index, item){
+    for (var i = 0; i < operators.length - 2; i++){
+      if (str[index.i] == operators[i]){
+        item.name = operators[i];
+        item.type = 1;
+        index.i++;
+        return true;
+      }
+    }
+    return false;
+  }
+  static acceptNot(str, index, item){
+    if (str[index.i] == operators[operators.length - 1]){
+      item.name = str[index.i];
+      item.type = 2;
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptOpen(str, index){
+    if (str[index.i] == '('){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptClose(str, index){
+    if (str[index.i] == ')'){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptComma(str, index){
+    if (str[index.i] == ","){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptTerm(str, index, item){
+    var temp = index.i;
+    var num_nots = 0;
+    while (Node.acceptNot(str, index, item)) num_nots++;
+    if (num_nots){
+      var fake_item = new Node();
+      if (!(Node.acceptAtom(str, index, fake_item) || (Node.acceptOpen(str, index) && Node.acceptWFF(str, index, fake_item) && Node.acceptClose(str, index)))){
+        item.children = [];
+        item.name = undefined;
+        item.type = undefined;
+        index.i = temp;
+        return false;
+      }
+      for (var i = 0; i < num_nots; i++) fake_item = new Node([fake_item], "¬", 2);
+      item.children = fake_item.children;;
+      item.name = fake_item.name;
+      item.type = fake_item.type;
+      return true;
+    } else if (Node.acceptAtom(str, index, item) || (Node.acceptOpen(str, index) && Node.acceptWFF(str, index, item) && Node.acceptClose(str, index))){
+      return true;
+    }
+    item.children = [];
+    item.name = undefined;
+    item.type = undefined;
+    index.i = temp;
+    return false;
+  }
+  static acceptWFF(str, index, item){
+    var temp = index.i, fake_item = new Node();
+    if (Node.acceptTerm(str, index, fake_item)){
+      var item1 = new Node(), item2 = new Node(), madeIt = false;
+      while ((madeIt = Node.acceptBinaryOperator(str, index, item1)) && Node.acceptTerm(str, index, item2)){
+        item1.children = [fake_item, item2];
+        fake_item = item1;
+        item1 = new Node();
+        item2 = new Node();
+      }
+      if (madeIt){
+        index.i = temp;
+        return false;
+      }
+      item.children = fake_item.children;
+      item.type = fake_item.type;
+      item.name = fake_item.name;
+      return true;
+    }
+    index.i = temp;
+    return false;
+  }
+  static acceptInference(str, index, item){
+    var temp = index.i;
+    var item1 = new Node();
+    if (Node.acceptWFF(str, index, item1)){
+      var arr = [item1, new Node()];
+      var foundComma;
+      while ((foundComma = Node.acceptComma(str, index)) && Node.acceptWFF(str, index, arr[arr.length - 1])) arr.push(new Node());
+      if (foundComma){
+        index.i = temp;
+        item.children = [];
+        return false;
+      }
+      if (str[index.i++] == operators[4]){
+        if (Node.acceptWFF(str, index, arr[arr.length - 1])){
+          item.children = arr;
+          item.type = 1;
+          item.name = operators[4];
+          return true;
+        }
+      }
+    }
+    if (str[index.i++] == operators[4]){
+      if (Node.acceptWFF(str, index, item1)){
+        item.children = [item1];
+        item.type = 1;
+        item.name = operators[4];
+        return true;
+      }
+    }
+    index.i = temp;
+    item.children = [];
+    return false;
+  }
+
+  static Equals(node1, node2){
+    if (node1.name != node2.name || node1.type != node1.type || node1.children.length != node2.children.length) return false;
+    for (var i = 0; i < node1.children.length; i++){
+      if (!Node.Equals(node1.children[i], node2.children[i])) return false;
+    }
+    return true;
+  }
+
+  Copy(){
+    var output = new Node();
+    output.type = this.type;
+    output.name = this.name;
+    output.children = [];
+    for (var i = 0; i < this.children.length; i++) output.children[i] = this.children[i].Copy();
+    return output;
+  }
+  Evaluate(atom, x){
+    if (this.type == 0 && this.name == atom) return x.Copy();
+    var output = new Node();
+    for (var i = 0; i < this.children.length; i++) output.children[i] = this.children[i].Evaluate(atom, x);
+    output.name = this.name;
+    output.type = this.type;
+    return output;
+  }
+
+  drawWidth(r){
+    if (this.children.length == 0) return [r, r];
+    var left = 10 * (this.children.length - 1) * 0.5, right = 10 * (this.children.length - 1) * 0.5;
+    for (var i = 0; i < this.children.length; i++){
+      var w = this.children[i].drawWidth(r);
+      left += w[0];
+      right += w[1];
+    }
+    return [left, right];
+  }
+  draw(r = 20, x = canvas.width * 0.5, y = r + 10){
+    if (this.children.length){
+      var l = [], total = 10 * (this.children.length - 1);
+      for (var i = 0; i < this.children.length; i++){
+        l[i] = this.children[i].drawWidth(r);
+        total += l[i][0] + l[i][1];
+      }
+      var left = x - 0.5 * total;
+      for (var i = 0; i < this.children.length; i++){
+        left += l[i][0];
+        ctx.beginPath();
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 3;
+        ctx.lineJoin = "round";
+        ctx.moveTo(x, y);
+        ctx.lineTo(left, y + r + 20);
+        ctx.closePath();
+        ctx.stroke();
+        this.children[i].draw(r, left, y + r + 20);
+        left += l[i][1] + 10;
+      }
+    }
+    ctx.beginPath();
+    ctx.fillStyle = "white";
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = "black";
+    ctx.textAlign = "center";
+    var char = this.name;
+    ctx.font = (1.4 * r / Math.sqrt(char.length)) + "px monospace";
+    ctx.fillText(char, x, y + 0.4 * r / Math.sqrt(char.length));
+  }
+
+  tostring(depth = 0){
+    if (this.type == 0) return this.name;
+    if (this.type == 2){
+      var output = this.name + this.children[0].tostring(depth + 1);
+      return depth ? "(" + output + ")" : output;
+    }
+    var output = this.children[0].tostring(depth + 1) + this.name + this.children[1].tostring(depth + 1);
+    return depth ? "(" + output + ")" : output;
+  }
+}
+class Index {
+  constructor(i = 0){
+    this.i = i;
+  }
+}
+
+var tree, tab;
+function edited(){
+  var str = document.getElementById("input").value;
+  var index = new Index();
+  tree = new Node();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  document.getElementById("text_output").innerHTML = "";
+  if (Node.acceptInference(str, index, tree) && index.i == str.length){
+    //tree.draw();
+    var lang = document.getElementById("language").value;
+    tab = Tableau.fromInference(tree, lang);
+    //document.getElementById("text_output").innerHTML = "This inference is " + (Tableau.isValid(tab) ? "valid" : "invalid");
+    Tableau.isValid(tab);
+    tab.head.draw(lang, 40);
+  }
+}
+function klik(char){
+  document.getElementById("input").value += char;
+  document.getElementById("input").focus();
+}
+
+document.getElementById("input").onkeyup = function (e){
+  if (e.keyCode >= 49 && e.keyCode - 49 < operators.length){
+    var str = document.getElementById("input").value;
+    document.getElementById("input").value = str.substr(0, str.length - 1) + operators[e.keyCode - 49];
+  }
+}
+
+</script>
+</body>
+</html>
