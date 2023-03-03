@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <canvas id="map" style="position:absolute;left:0px;top:0px;z-index:1" width="600" height="600"></canvas>
+<script>
+var Xmin, Xmax, Ymin, Ymax;
+var c = document.getElementById("map");
+c.width = window.innerWidth;
+c.height = window.innerHeight;
+var ctx = c.getContext("2d");
+var screendist = 0.2;
+
+class Vector2 {
+  constructor(x, y){
+    this.x = x;
+    this.y = y;
+  }
+  Multpl(x){
+    return new Vector2(this.x * x, this.y * x);
+  }
+  Add(v){
+    return new Vector2(this.x + v.x, this.y + v.y);
+  }
+  get magnitude(){
+    return Math.sqrt(this.x*this.x + this.y*this.y);
+  }
+  get normalized(){
+    return this.Multpl(1/this.magnitude);
+  }
+}
+class Vector3 {
+  constructor(x, y, z){
+    this.x = x;
+    this.y = y;
+    this.z = z;
+  }
+  Add(v){
+    return new Vector3(this.x + v.x, this.y + v.y, this.z + v.z);
+  }
+  Sub(v){
+    return new Vector3(this.x - v.x, this.y - v.y, this.z - v.z);
+  }
+  Multpl(x){
+    return new Vector3(this.x * x, this.y * x, this.z * x);
+  }
+  Dot(v){
+    return this.x*v.x+this.y*v.y+this.z*v.z;
+  }
+  Crs(v){
+    return new Vector3(this.y*v.z-this.z*v.y, this.z*v.x-this.x*v.z, this.x*v.y-this.y*v.x);
+  }
+  Bounce(n){
+    return this.Add(n.Multpl(-2*n.Dot(this)));
+  }
+  Scatter(n){
+    var nr = 1.23;
+    return n.Multpl(nr * this.Dot(n) + Math.sqrt(1 + nr * nr * (this.Dot(n)**2 - 1))).Add(this.Multpl(nr));
+  }
+  Rot(q){
+    return q.Prod(this.quat).Prod(q.conj).v;
+  }
+  Dist(v){
+    return Math.hypot(this.x - v.x, this.y - v.y, this.z - v.z);
+  }
+  get magnitude(){
+    return Math.hypot(this.x, this.y, this.z);
+  }
+  get normalized(){
+    return this.Multpl(1/this.magnitude);
+  }
+  get quat(){
+    return new Quaternion(0, this);
+  }
+  static get zero(){
+    return new Vector3(0, 0, 0);
+  }
+}
+class Quaternion {
+  constructor(a, v){
+    this.a = a;
+    this.v = v;
+  }
+  Add(q){
+    return new Quaternion(this.a + q.a, this.v.Add(q.v));
+  }
+  Prod(q){
+    return new Quaternion(this.a*q.a-this.v.x*q.v.x-this.v.y*q.v.y-this.v.z*q.v.z, new Vector3(this.a*q.v.x+this.v.x*q.a+this.v.y*q.v.z-this.v.z*q.v.y, this.a*q.v.y+this.v.y*q.a-this.v.x*q.v.z+this.v.z*q.v.x, this.a*q.v.z+this.v.z*q.a+this.v.x*q.v.y-this.v.y*q.v.x));
+  }
+  get conj(){
+    return new Quaternion(this.a, this.v.Multpl(-1));
+  }
+  static Rot(feta, vector){
+    return new Quaternion(Math.cos(feta / 2), vector.normalized.Multpl(Math.sin(feta / 2)));
+  }
+}
+class Sphere {
+  constructor(v, r, color = new Vector3(255, 0, 0)){
+    this.v = v;
+    this.r = r;
+    this.color = color;
+  }
+  Dist(v){
+    return v.Sub(this.v).magnitude - this.r;
+  }
+  rayCast(x, v){
+    var n = this.v.Sub(x);
+    var discr = Math.pow(this.r, 2) - n.x*n.x - n.y*n.y - n.z*n.z + Math.pow(n.Dot(v), 2);
+    if (discr >= 0){
+      var r = n.Dot(v) - Math.sqrt(discr);
+      if (r > 0.01) { return [x.Add(v.Multpl(r)), r]; }
+    }
+    return null;
+  }
+  normal(x){
+    return x.Sub(this.v).normalized;
+  }
+}
+class Cube {
+  constructor(v = Vector3.zero, m = Matrix.identity, color = new Vector3(255, 0, 0), emittance = false){
+    this.v = v;
+    this.m = m;
+    this.invM = m.inverse;
+    this.color = color;
+    this.emittance = emittance;
+  }
+  rayCast(x, v){
+    var xx = this.invM.MultMatrix(x.Sub(this.v));
+    var vv = this.invM.MultMatrix(v);
+    var t0 = Math.min((vv.x != 0)? -xx.x / vv.x : Infinity, (vv.y != 0)? -xx.y / vv.y : Infinity, (vv.z != 0)? -xx.z / vv.z : Infinity);
+    var t1 = Math.max((vv.x != 0)? (1 - xx.x) / vv.x : -Infinity, (vv.y != 0)? (1 - xx.y) / vv.y : -Infinity, (vv.z != 0)? (1 - xx.z) / vv.z : -Infinity);
+    var t = Math.min(t0, t1);
+    var pos = xx.Add(vv.Multpl(t));
+    if (t1 < t0) { return [x.Add(v.Multpl(t)), t]; }
+    return null;
+  }
+  normal(x){
+    var xx = this.invM.MultMatrix(x.Sub(this.v));
+    var returnvalue = this.m.v1.normalized;
+    if (xx.y > xx.x){
+      returnvalue = this.m.v2.normalized;
+    }
+    if (xx.z > xx.y && xx.z > xx.x) {
+      returnvalue = this.m.v3.normalized;
+    }
+    return returnvalue;
+  }
+}
+class Plane {
+  constructor(n, x, color){
+    this.n = n.normalized;
+    this.x = x;
+    this.color = color;
+  }
+  Dist(v){
+    return this.n.Dot(v.Sub(this.x));
+  }
+  rayCast(x, v){
+    var d = v.Dot(this.n);
+    if (d != 0){
+      var r = -this.n.Dot(x.Sub(this.x)) / d;
+      var plek = x.Add(v.Multpl(r));
+      if (Math.abs(Math.floor(plek.x / 2) % 2) == Math.abs(Math.floor(plek.y / 2) % 2)){
+        this.color = new Vector3(0, 0, 0);
+      } else {
+        this.color = new Vector3(255, 255, 255);
+      }
+      if (r > 0.01) { return [x.Add(v.Multpl(r)), r]; }
+    }
+    return null;
+  }
+  normal(x){
+    return this.n;
+  }
+}
+class Matrix {
+  constructor(v1, v2, v3){
+    this.v1 = v1;
+    this.v2 = v2;
+    this.v3 = v3;
+  }
+  MultMatrix(v){
+    return this.v1.Multpl(v.x).Add(this.v2.Multpl(v.y)).Add(this.v3.Multpl(v.z));
+  }
+  Mult(m){
+    return new Matrix(m.MultMatrix(this.v1), m.MultMatrix(this.v2), m.MultMatrix(this.v3));
+  }
+  Multpl(x){
+    return new Matrix(this.v1.Multpl(x), this.v2.Multpl(x), this.v3.Multpl(x));
+  }
+  draw(begin = Vector3.zero){
+    Line3D(begin, this.v1.Add(begin), "red");
+    Line3D(begin, this.v2.Add(begin), "green");
+    Line3D(begin, this.v3.Add(begin), "blue");
+  }
+  get inverse(){
+    var a = this.v1.x, b = this.v2.x, c = this.v3.x, d = this.v1.y, e = this.v2.y, f = this.v3.y, g = this.v1.z, h = this.v2.z, k = this.v3.z, det = this.det;
+    return new Matrix(new Vector3(e*k-f*h,-d*k+f*g,d*h-e*g).Multpl(1 / det),new Vector3(-b*k+c*h,a*k-c*g,-a*h+b*g).Multpl(1 / det),new Vector3(b*f-c*e,-a*f+c*d,a*e-b*d).Multpl(1 / det));
+  }
+  get det(){
+    var a = this.v1.x, b = this.v2.x, c = this.v3.x, d = this.v1.y, e = this.v2.y, f = this.v3.y, g = this.v1.z, h = this.v2.z, k = this.v3.z;
+    return a*(e*k-f*h)-b*(d*k-f*g)+c*(d*h-e*g);
+  }
+  static Quat(q){
+    return new Matrix(new Vector3(1,0,0).Rot(q), new Vector3(0,1,0).Rot(q), new Vector3(0,0,1).Rot(q));
+  }
+  Rot(q){
+    return new Matrix(this.v1.Rot(q), this.v2.Rot(q), this.v3.Rot(q));
+  }
+  static get identity(){
+    return new Matrix(new Vector3(1,0,0), new Vector3(0,1,0), new Vector3(0,0,1));
+  }
+}
+
+var cameraPos = new Vector3(40, 40, 15);
+lookAt(new Vector3(-10, -10, 0));
+
+var spheres;
+function start(){
+  ctx.clearRect(0, 0, c.width, c.height);
+  map(-0.025 * c.width / c.height, 0.025 * c.width / c.height, -0.025, 0.025);
+  var imageData = ctx.getImageData(0, 0, c.width, c.height);
+  spheres = [new Plane(new Vector3(0,0,1), new Vector3(0,0,-2), new Vector3(255,255,255))];
+  for (var y = -5; y <= 2; y++){
+    for (var x = -5; x <= 2; x++){
+      spheres[spheres.length] = new Sphere(new Vector3(4*x, 4*y, 0), 0.8, new Vector3(255*Math.random(), 255*Math.random(), 255*Math.random()));
+    }
+  }
+  var lightDir = new Vector3(0, 0, -1).normalized;
+  for (var i = 0; i < imageData.data.length; i += 4){
+    var dir = vectorFromIndex(i);
+    var hit = SphereRayCast(cameraPos, dir, spheres);
+    var color = [];
+    var colorFactor = 1;
+    var finalColor = new Vector3(255, 255, 255);
+    for (var t = 0; t < 5 && hit != null; t++){
+      if (hit[0].lightEmittance){
+        finalColor = hit[0].color;
+        colorFactor = 1;
+        hit = null;
+      } else {
+        color[t] = hit[0].color;
+        dir = dir.Bounce(hit[0].normal(hit[1]));
+        colorFactor *= -dir.Dot(hit[0].normal(hit[1])) + 1;
+        hit = SphereRayCast(hit[1], dir, spheres);
+      }
+    }
+    for (var t = color.length - 1; t >= 0; t--){
+      finalColor = finalColor.Add(color[t]).Multpl(0.5);
+    }
+    finalColor = finalColor.Multpl(colorFactor);
+    imageData.data[i] = finalColor.x;
+    imageData.data[i + 1] = finalColor.y;
+    imageData.data[i + 2] = finalColor.z;
+    imageData.data[i + 3] = 255;
+  }
+  ctx.putImageData(imageData, 0, 0);
+}
+start();
+function vectorFromIndex(i){
+  var y = Math.floor(i/4 / c.width);
+  var x = i/4 - y * c.width - 1;
+  var Cx = x/(c.width-1)*(Xmax - Xmin)+Xmin;
+  var Cy = y/(c.height-1)*(Ymin - Ymax)+Ymax;
+  return cameraMatrix.inverse.MultMatrix(new Vector3(Cx, Cy, screendist));
+}
+function Pt_On3D(v, color){
+  var vect = cameraMatrix.MultMatrix(v.Sub(cameraPos));
+  Pt_On(vect.x * screendist/vect.z, vect.y * screendist/vect.z, color);
+}
+function Pt_On(x, y, color){
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round((x - Xmin)/(Xmax - Xmin)*(c.width - 1)) - 1, Math.round((y - Ymax)/(Ymin - Ymax)*(c.height - 1)) - 1, 3, 3);
+}
+
+function SphereRayCast(x, v, objects){
+  v = v.normalized;
+  var min = Infinity;
+  var index = 0;
+  for (var i = 0; i < objects.length; i++){
+    var hit = objects[i].rayCast(x, v);
+    if (hit != null){
+      if (hit[1] < min){
+        index = i;
+        min = hit[1];
+      }
+    }
+  }
+  if (min < Infinity){
+    return [objects[index], x.Add(v.Multpl(min))];
+  }
+  return null;
+}
+function isShadow(x, lightdirr, objects){
+  for (var i = 0; i < objects.length; i++){
+    var hit = objects[i].rayCast(x.Add(lightdirr.Multpl(-5000)), lightdirr);
+    if (hit != null){
+      if (hit[1] < 4999.99) { return true; }
+    }
+  }
+  return false;
+}
+
+function Line3D(v1, v2, color){
+  var vect1 = cameraMatrix.MultMatrix(v1.Sub(cameraPos));
+  var vect2 = cameraMatrix.MultMatrix(v2.Sub(cameraPos));
+  Line(vect1.x * screendist/vect1.z, vect1.y * screendist/vect1.z, vect2.x * screendist/vect2.z, vect2.y * screendist/vect2.z, color);
+}
+function Line(x, y, x1, y1, color){
+  ctx.beginPath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1;
+  ctx.lineJoin = "round";
+  ctx.moveTo(Math.round((x - Xmin)/(Xmax - Xmin)*(c.width - 1)), Math.round((y - Ymax)/(Ymin - Ymax)*(c.height - 1)));
+  ctx.lineTo(Math.round((x1 - Xmin)/(Xmax - Xmin)*(c.width - 1)), Math.round((y1 - Ymax)/(Ymin - Ymax)*(c.height - 1)));
+  ctx.closePath();
+  ctx.stroke();
+}
+
+function map(a, b, c, d){
+  Xmin = a;
+  Xmax = b;
+  Ymin = c;
+  Ymax = d;
+}
+function lookAt(v = Vector3.zero, up = new Vector3(0, 0, 1)){
+  var z = v.Sub(cameraPos).normalized;
+  var x = z.Crs(up);
+  var y = x.Crs(z);
+  cameraMatrix = new Matrix(x, y, z).inverse;
+}
+
+</script>
+</body>
+</html>

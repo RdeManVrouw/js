@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<body style="overflow-x:hidden;overflow-y:hidden">
+    <input id="input" type="file"></input>
+<script>
+
+class Word {
+  constructor(str, conc, known){
+    this.str = str;
+    this.concreteness = Math.round((conc - 1.04) * 25.25252525252525) / 100; // [0 1]
+    this.known = known; // [0 1]
+  }
+}
+
+document.getElementById('input').addEventListener('change', function() {
+  var fr = new FileReader();
+  fr.onload = function(){
+    paramchanged(fr.result);
+  }
+  fr.readAsText(this.files[0]);
+});
+
+var words;
+function paramchanged(str){
+  words = str.split("\n");
+  var num_bins = 20;
+  var bin = [];
+  for (var i = 0; i < num_bins; i++) bin[i] = 0;
+  for (var i = 0; i < words.length; i++){
+    words[i] = words[i].split("\t");
+    words[i] = new Word(words[i][0], words[i][2] * 1, words[i][6] * 1);
+    if (words[i].str.length == 5 && words[i].known > 0.95 && words[i].concreteness < 0.1){
+      console.log(words[i].str, words[i].concreteness);
+    }
+  }
+  console.log(bin);
+}
+
+</script>
+</body>
+</html>

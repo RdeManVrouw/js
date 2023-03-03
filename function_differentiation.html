@@ -1,0 +1,714 @@
+<!DOCTYPE html>
+<html>
+<body style="background-color:#282C34">
+  <link rel="preconnect" href="https://fonts.gstatic.com">
+  <textarea autofocus id="equations" placeholder="equations" type="text" spellcheck="false" cols="120" rows="14" style="resize:none;position:absolute;left:80px;border:none;top:10px;outline-width:0px;font-size:20px;font-family:monospace" oninput="edited(this.value, 0)"></textarea>
+  <textarea placeholder="command" type="text" spellcheck="false" cols="40" rows="1" style="resize:none;position:absolute;left:80px;border:none;top:343.8px;outline-width:0px;font-size:20px;font-family:monospace" oninput="edited(this.value, 1)"></textarea>
+  <textarea placeholder="output" id="output_text" readonly type="text" spellcheck="false" cols="40" rows="14" style="resize:none;position:absolute;left:80px;border:none;top:376px;outline-width:0px;font-size:20px;font-family:monospace"></textarea>
+  <textarea id="definitions" readonly type="text" spellcheck="false" cols="4" rows="14" style="resize:none;position:absolute;left:10px;border:none;top:10px;outline-width:0px;font-size:20px;font-family:monospace"></textarea>
+  <canvas id="map" style="position:absolute;width:800px;top:343.8px;height:380px;left:570px;z-index:-1;border:2px solid white"></canvas>
+<script>
+var canvas = document.getElementById("map");
+canvas.width = 800;
+canvas.height = 380;
+var ctx = canvas.getContext("2d");
+/*
+<natural> := '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'
+<zero> := '0'
+<digit> := <zero> | <natural>
+<integer> := ('-' | '') (<natural> [ <digit> ]) | <zero>
+<float> := <integer> '.' [ <digit> ]
+<number> := <integer> | <float>
+
+<char> := 'a' | 'b' | ... | 'z' | 'A' | ... | 'Z'
+<operator> := '+' | '-' | '*' | '/' | '^'
+
+<comma> := ','
+<variable> := [ <char> ] [ <digit> ]
+<function> := (<variable> | '') '(' <expression> [ <comma> <expression> ] ')'
+<term> := ((<number> | '') <variable>) | <function> | <number>
+<expression> := <term> [ <operator> <term> ]
+<equation> := <expression> '=' <expression>
+
+<differentiation_command> := <variable> '_' <variable>
+<evaluate_command> := 'evaluate ' (<function> | <variable>) [ ' ' <variable> '=' <expression> ]
+*/
+
+Array.prototype.merge = function (arr) {
+  for (var i = 0; i < arr.length; i++){
+    if (!this.includes(arr[i])) this.push(arr[i]);
+  }
+}
+class System {
+  constructor(){
+    this.equations = [];
+    this.types = []; // empty, rest, variable definition, function definition
+    this.variables = [];
+    this.variable_dict = {};
+    this.function_dict = {};
+  }
+
+  getDefinition(var_name){
+    var temp = this.equations[this.variable_dict[var_name]];
+    return temp.children[temp.children[0].type == 1];
+  }
+
+  static readSystem(str, item){
+    var stri = str.split('\n');
+    item.equations = [];
+    var foundValidEquation = false;
+    for (var i = 0; i < stri.length; i++){
+      item.equations[i] = new Node();
+      if (Node.readEquation(stri[i], new Item(0), item.equations[i])){
+        foundValidEquation = true;
+        item.types[i] = 1;
+        if (item.equations[i].children[0].type == 1){
+          item.variable_dict[item.equations[i].children[0].name] = i;
+          item.types[i] = 2;
+        } else if (item.equations[i].children[1].type == 1){
+          item.variable_dict[item.equations[i].children[1].name] = i;
+          item.equations[i].children = [item.equations[i].children[1], item.equations[i].children[0]];
+          item.types[i] = 2;
+        }
+      } else {
+        item.equations[i] = null;
+        item.types[i] = 0;
+      }
+    }
+    return foundValidEquation;
+  }
+  static readDifferentiation(str, index, item){
+    var temp = index.i;
+    item.type = 0;
+    item.name = '_';
+    item.children = [new Node(), new Node()];
+    if (Node.acceptVariable(str, index, item.children[0]) && str[index.i] == '_'){
+      index.i++;
+      if (Node.acceptVariable(str, index, item.children[1]) && index.i == str.length) return true;
+    }
+    index.i = temp;
+    item.type = undefined;
+    item.name = undefined;
+    item.children = undefined;
+    return false;
+  }
+  static acceptEvaluation(str, index, item, dict){
+    var temp = index.i;
+    if (str.substr(index.i, index.i + 9) == "evaluate "){
+      index.i += 9;
+      if (Node.acceptFunction(str, index, item) || Node.acceptVariable(str, index, item)){
+        var variable = new Node(), expression = new Node();
+        var keepGoing = true;
+        while (keepGoing){
+          keepGoing = false;
+          var temp2 = index.i;
+          if (str[index.i] == " "){
+            index.i++;
+            if (Node.acceptVariable(str, index, variable)){
+              if (str[index.i] == "="){
+                index.i++;
+                if (Node.acceptExpression(str, index, expression) && expression.findFunctionType()) keepGoing = true;
+              }
+            }
+          }
+          if (keepGoing){
+            dict[variable.name] = expression;
+            variable = new Node();
+            expression = new Node();
+          } else {
+            index.i = temp2;
+          }
+        }
+        if (str.length != index.i){
+          index.i = temp;
+          return false;
+        }
+        return true;
+      }
+    }
+    index.i = temp;
+    return false;
+  }
+}
+class Node {
+  constructor(children = [], value, name, type, function_type, dim){
+    this.children = children;
+    this.value = value; // the constant or priority of the operator
+    this.name = name;  // name of the variable, operator or function
+    this.type = type;  // operator, variable, constant, function (always maps to R, except identity functions)
+
+    this.function_type = function_type; // scalar, vector, matrix (only meaningfull if it is the identity function (type == 3 && name == ''))
+    this.dim = dim; // 1 for a scalar, n for a vector, [y, x] for a matrix
+    this.dependencies = []; // variables it is dependent of
+  }
+
+  static acceptNatural(str, index){
+    if (str.charCodeAt(index.i) >= 49 && str.charCodeAt(index.i) <= 57){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptZero(str, index){
+    if (str[index.i] == '0'){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptDigit(str, index){
+    return Node.acceptZero(str, index) || Node.acceptNatural(str, index);
+  }
+  static acceptInteger(str, index, item){
+    var sign = 1;
+    if (str[index.i] == '-'){
+      sign = -1;
+      index.i++;
+    }
+    if (Node.acceptNatural(str, index)){
+      var sum = str.charCodeAt(index.i - 1) - 48;
+      while (Node.acceptDigit(str, index)){
+        sum = 10 * sum + str.charCodeAt(index.i - 1) - 48;
+      }
+      item.value = sum * sign;
+      item.type = 2;
+      return true;
+    }
+    if (Node.acceptZero(str, index)){
+      item.value = 0;
+      item.type = 2;
+      return true;
+    }
+    if (sign == -1) index.i--;
+    return false;
+  }
+  static acceptFloat(str, index, item){
+    var temp = index.i;
+    var sign = 1;
+    if (str[index.i] == '-'){
+      sign = -1;
+      index.i++;
+    }
+    if (Node.acceptInteger(str, index, item) && str[index.i] == '.'){
+      index.i++;
+      var mult = 0.1;
+      while (Node.acceptDigit(str, index)){
+        item.value += mult * (str.charCodeAt(index.i - 1) - 48);
+        mult /= 10;
+      }
+      item.value *= sign;
+      return true;
+    }
+    index.i = temp;
+    return false;
+  }
+  static acceptNumber(str, index, item){
+    return Node.acceptFloat(str, index, item) || Node.acceptInteger(str, index, item);
+  }
+  static acceptChar(str, index){
+    if ((str.charCodeAt(index.i) >= 97 && str.charCodeAt(index.i) <= 122) || (str.charCodeAt(index.i) >= 65 && str.charCodeAt(index.i) <= 90)){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptOperator(str, index, item){
+    var priority = 0;
+    if (str[index.i] == '+' || str[index.i] == '-') priority = 1;
+    if (str[index.i] == '*' || str[index.i] == '/') priority = 2;
+    if (str[index.i] == '^') priority = 3;
+    if (priority){
+      item.i = str[index.i];
+      index.i++;
+    }
+    return priority;
+  }
+  static acceptVariable(str, index, item){
+    var temp = index.i;
+    if (Node.acceptChar(str, index)){
+      while (Node.acceptChar(str, index));
+      while (Node.acceptDigit(str, index));
+      item.name = str.substring(temp, index.i);
+      item.type = 1;
+      return true;
+    }
+    index.i = temp;
+    return false;
+  }
+  static acceptOpen(str, index){
+    if (str[index.i] == '('){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptClose(str, index){
+    if (str[index.i] == ')'){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptComma(str, index){
+    if (str[index.i] == ','){
+      index.i++;
+      return true;
+    }
+    return false;
+  }
+  static acceptFunction(str, index, item){
+    var temp = index.i;
+    if (!Node.acceptVariable(str, index, item)) item.name = '';
+    item.type = 3;
+    item.children = [new Node()];
+    if (Node.acceptOpen(str, index) && Node.acceptExpression(str, index, item.children[0])){
+      item.children[1] = new Node();
+      var i = 1, isComma = false;
+      while ((isComma = Node.acceptComma(str, index)) && Node.acceptExpression(str, index, item.children[i])){
+        i++;
+        item.children[i] = new Node();
+      }
+      if (!isComma && Node.acceptClose(str, index)){
+        item.children.pop();
+        return true;
+      }
+    }
+    item.type = undefined;
+    item.name = undefined;
+    item.children = [];
+    index.i = temp;
+    return false;
+  }
+  static acceptTerm(str, index, item){
+    item.value = undefined;
+    var sign = 1;
+    if (str[index.i] == '-'){
+      index.i++;
+      sign = -1;
+    }
+    if (Node.acceptNumber(str, index, item) || sign == -1){
+      item.value = (item.value == undefined) ? -1 : item.value * sign;
+      var right = new Node();
+      if (!(Node.acceptFunction(str, index, right) || Node.acceptVariable(str, index, right))) return true;
+      item.children = [new Node([], item.value, undefined, 2), right];
+      item.value = 2;
+      item.name = "*";
+      item.type = 0;
+      return true;
+    }
+    if (Node.acceptFunction(str, index, item) || Node.acceptVariable(str, index, item)) return true;
+    return false;
+  }
+  static acceptExpression(str, index, item){
+    var temp = index.i, fake_item = new Node();
+    if (Node.acceptTerm(str, index, fake_item)){
+      var priority, item1 = new Node(), operator = new Item();
+      while ((priority = Node.acceptOperator(str, index, operator)) && Node.acceptTerm(str, index, item1)){
+        var insertion = fake_item;
+        var generation = 0;
+        while (insertion.type == 0 && priority > insertion.value){
+          insertion = insertion.children[1];
+          generation++;
+        }
+        if (generation == 0){
+          fake_item = new Node([fake_item, item1]);
+          fake_item.type = 0;
+          fake_item.name = operator.i;
+          fake_item.value = priority;
+        } else {
+          fake_item.Insert(generation, item1, 0, operator.i, priority);
+        }
+        item1 = new Node();
+      }
+      if (priority){
+        index.i = temp;
+        return false;
+      }
+      item.children = fake_item.children;
+      item.type = fake_item.type;
+      item.value = fake_item.value;
+      item.name = fake_item.name;
+      return true;
+    }
+    index.i = temp;
+    return false;
+  }
+  static acceptEquation(str, index, item){
+    var temp = index.i;
+    item.type = 0;
+    item.name = '=';
+    item.children = [new Node(), new Node()];
+    if (Node.acceptExpression(str, index, item.children[0]) && str[index.i] == '='){
+      index.i++;
+      if (Node.acceptExpression(str, index, item.children[1])) return true;
+    }
+    index.i = temp;
+    item.type = undefined;
+    item.name = undefined;
+    item.children = undefined;
+    return false;
+  }
+
+  static readEquation(str, index, item){
+    var str1 = str.replaceAll(" ", "");
+    return str1 != "" && Node.acceptEquation(str1, index, item)  && index.i == str1.length && item.findFunctionType() && item.simplify() && item.findDependencies();
+  }
+
+  static areEqual(node1, node2){
+    if (node1.children.length != node2.children.length || node1.value != node2.value || node1.name != node2.name || node1.type != node2.type || node1.function_type != node2.function_type) return false;
+    if ((node1.function_type == 2 && (node1.dim[0] != node2.dim[0] || node1.dim[1] != node2.dim[1])) || (node1.function_type < 2 && node1.dim != node2.dim)) return false;
+    for (var i = 0; i < node1.children.length; i++){
+      if (!Node.areEqual(node1.children[i], node2.children[i])) return false;
+    }
+    return true;
+  }
+
+  findFunctionType(){
+    if (this.type == 1 || this.type == 2){
+      this.function_type = 0;
+      this.dim = 1;
+      return true;
+    }
+    for (var i = 0; i < this.children.length; i++){
+      if (!this.children[i].findFunctionType()) return false;
+    }
+    if (this.type == 0){
+      if (this.children[0].function_type == 0 && this.children[1].function_type == 0){
+        this.function_type = 0;
+        this.dim = 1;
+        return true;
+      }
+      if (this.name == '='){
+        if (this.children[0].function_type != this.children[1].function_type) return false;
+        this.function_type = this.children[0].function_type;
+        if (this.function_type == 2){
+          if (this.children[0].dim[0] != this.children[1].dim[0] || this.children[0].dim[1] != this.children[1].dim[1]) return false;
+          this.dim = [this.children[0].dim[0], this.children[0].dim[1]];
+        } else {
+          if (this.children[0].dim != this.children[1].dim) return false;
+          this.dim = this.children[0].dim;
+        }
+        return true;
+      }
+      if (this.value == 1){
+        if (this.children[0].function_type != this.children[1].function_type) return false;
+        if (this.children[0].function_type == 2){
+          if (this.children[0].dim[0] != this.children[1].dim[0] || this.children[0].dim[1] != this.children[1].dim[1]) return false;
+          this.dim = [this.children[0].dim[0], this.children[0].dim[1]];
+          this.function_type = 2;
+        } else {
+          if (this.children[0].dim != this.children[1].dim) return false;
+          this.dim = this.children[0].dim;
+          this.function_type = this.children[0].function_type;
+        }
+        return true;
+      }
+      if (this.name == "*"){
+        if (this.children[0].function_type + this.children[1].function_type == 1){
+          this.function_type = 1;
+          this.dim = Math.max(this.children[0].dim, this.children[1].dim);
+          return true;
+        }
+        if (this.children[0].function_type == 2 && this.children[1].function_type == 1){
+          if (this.children[0].dim[1] != this.children[1].dim) return false;
+          this.dim = this.children[0].dim[0];
+          this.function_type = 1;
+          return true;
+        }
+        if (this.children[0].function_type == 1 && this.children[1].function_type == 1){
+          if (this.children[0].dim != this.children[1].dim) return false;
+          this.dim = this.children[0].dim;
+          this.function_type = 0;
+          return true;
+        }
+        if (this.children[0].function_type == 2 && this.children[1].function_type == 2){
+          if (this.children[0].dim[1] != this.children[1].dim[0]) return false;
+          this.dim = [this.children[0].dim[0], this.children[1].dim[1]];
+          this.function_type = 2;
+          return true;
+        }
+        if (this.children[0].function_type + this.children[1].function_type == 2){
+          this.dim = (this.children[0].function_type == 2) ? [this.children[0].dim[0], this.children[0].dim[1]] : [this.children[1].dim[0], this.children[1].dim[1]];
+          this.function_type = 2;
+          return true;
+        }
+        return false;
+      }
+      if (this.name == "/"){
+        if (this.children[0].function_type == 1 && this.children[1].function_type == 0){
+          this.function_type = 1;
+          this.dim = this.children[0].dim;
+          return true;
+        }
+        if (this.children[0].function_type == 2 && this.children[1].function_type == 0){
+          this.function_type = 2;
+          this.dim = [this.children[0].dim[0], this.children[0].dim[1]];
+          return true;
+        }
+        return false;
+      }
+      if (this.name == "^"){
+        if (this.children[0].function_type == 2 && this.children[1].function_type == 0){
+          if (this.children[0].dim[0] != this.children[0].dim[1]) return false;
+          this.function_type = 2;
+          this.dim = [this.children[0].dim[0], this.children[0].dim[1]];
+          return true;
+        }
+        return false;
+      }
+    }
+    if (this.type == 3){
+      if (this.name == ''){
+        if (this.children.length == 1){
+          this.function_type = this.children[0].function_type;
+          this.dim = (this.function_type == 2) ? [this.children[0].dim[0], this.children[0].dim[1]] : this.children[0].dim;
+          return true;
+        }
+        if (this.children[0].function_type == 2) return false;
+        for (var i = 0; i < this.children.length - 1; i++){
+          if (this.children[i].function_type != this.children[i + 1].function_type || this.children[i].dim != this.children[i + 1].dim) return false;
+        }
+        this.dim = (this.children[0].function_type == 0) ? this.children.length : [this.children.length, this.children[0].dim];
+        this.function_type = this.children[0].function_type + 1;
+      } else {
+        this.function_type = 0;
+        this.dim = 1;
+      }
+      return true;
+    }
+    return false;
+  }
+  simplify(){
+    if (this.type == 1 || this.type == 2) return true;
+    for (var i = 0; i < this.children.length; i++){
+      if (!this.children[i].simplify()) return false;
+    }
+    if (this.type == 0){
+      if (this.name == '=') return true;
+      var left = this.children[0];
+      var right = this.children[1];
+      if ((this.name == '^' || this.name == '*') && right.type == 2 && right.value == 1 || (this.name == '/' && right.type == 2 && right.value == 1)){
+        this.children = left.children;
+        this.value = left.value;
+        this.name = left.name;
+        this.type = left.type;
+        this.function_type = left.function_type;
+        this.dim = left.dim;
+        return true;
+      }
+      if (this.name == '*' && left.type == 2 && left.value == 1){
+        this.children = right.children;
+        this.value = right.value;
+        this.name = right.name;
+        this.type = right.type;
+        this.function_type = right.function_type;
+        this.dim = right.dim;
+        return true;
+      }
+      if (left.function_type || right.function_type || this.function_type) return true;
+      if (this.name == '^'){
+        if (right.type == 2 && right.value == 0){
+          this.children = [];
+          this.type = 2;
+          this.value = 1;
+          this.name = undefined;
+          return true;
+        }
+        if (left.type == 2 && left.value == 0){
+          this.children = [];
+          this.type = 2;
+          this.value = 0;
+          this.name = undefined;
+          return true;
+        }
+        if (left.type == 2 && left.value == 1){
+          this.children = [];
+          this.type = 2;
+          this.value = 1;
+          this.name = undefined;
+          return true;
+        }
+        if (left.type == 2 && left.value == 1){
+          this.children = [];
+          this.type = 2;
+          this.value = 1;
+          this.name = undefined;
+          return true;
+        }
+      }
+      if (this.name == '*' && ((left.type == 2 && left.value == 0) || (right.type == 2 && right.value == 0))){
+        this.children = [];
+        this.type = 2;
+        this.value = 0;
+        this.name = undefined;
+        return true;
+      }
+      if ((this.name == '+') && left.type == 2 && left.value == 0){
+        this.children = right.children;
+        this.value = right.value;
+        this.name = right.name;
+        this.type = right.type;
+        this.function_type = right.function_type;
+        this.dim = right.dim;
+        return true;
+      }
+      if ((this.name == '+' || this.name == '-') && right.type == 2 && right.value == 0){
+        this.children = left.children;
+        this.value = left.value;
+        this.name = left.name;
+        this.type = left.type;
+        this.function_type = left.function_type;
+        this.dim = left.dim;
+        return true;
+      }
+      if (this.name == '/'){
+        if (right.type == 2 && right.value == 0) return false;
+        if (left.type == 2 && left.value == 0){
+          this.children = [];
+          this.type = 2;
+          this.value = 0;
+          this.name = undefined;
+          return true;
+        }
+      }
+    }
+    return true;
+  }
+  findDependencies(){
+    if (this.type == 2) return true;
+    if (this.type == 1){
+      this.dependencies = [this.name];
+      return true;
+    }
+    this.dependencies = [];
+    for (var i = 0; i < this.children.length; i++){
+      this.children[i].findDependencies();
+      this.dependencies.merge(this.children[i].dependencies);
+    }
+    return true;
+  }
+  Insert(gen, rightItem, type, name, value){
+    if (gen == 1){
+      this.children[1] = new Node([this.children[1], rightItem]);
+      this.children[1].type = type;
+      this.children[1].name = name;
+      this.children[1].value = value;
+      return;
+    }
+    this.children[1].Insert(gen - 1, rightItem, type, name, value);
+  }
+
+  drawWidth(r){
+    if (this.children.length == 0) return [r, r];
+    var left = 10 * (this.children.length - 1) * 0.5, right = 10 * (this.children.length - 1) * 0.5;
+    for (var i = 0; i < this.children.length; i++){
+      var w = this.children[i].drawWidth(r);
+      left += w[0];
+      right += w[1];
+    }
+    return [left, right];
+  }
+  draw(r = 20, x = canvas.width * 0.5, y = r + 10){
+    if (this.children.length){
+      var l = [], total = 10 * (this.children.length - 1);
+      for (var i = 0; i < this.children.length; i++){
+        l[i] = this.children[i].drawWidth(r);
+        total += l[i][0] + l[i][1];
+      }
+      var left = x - 0.5 * total;
+      for (var i = 0; i < this.children.length; i++){
+        left += l[i][0];
+        ctx.beginPath();
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 3;
+        ctx.lineJoin = "round";
+        ctx.moveTo(x, y);
+        //ctx.lineTo(left, y);
+        ctx.lineTo(left, y + r + 20);
+        //ctx.moveTo(left, y + r + 20);
+        ctx.closePath();
+        ctx.stroke();
+        this.children[i].draw(r, left, y + r + 20);
+        left += l[i][1] + 10;
+      }
+    }
+    ctx.beginPath();
+    ctx.fillStyle = "white";
+    ctx.arc(x, y, r, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = "black";
+    ctx.textAlign = "center";
+    var char = this.value + "";
+    if (this.type == 0 || this.type == 1 || this.type == 3) char = this.name;
+    if (this.type == 3 && this.name == '') char = "[" + ("cvM"[this.function_type]) + "]";
+    ctx.font = (1.4 * r / Math.sqrt(char.length)) + "px monospace";
+    ctx.fillText(char, x, y + 0.4 * r / Math.sqrt(char.length));
+  }
+
+  get toString(){
+    if (this.type == 0){
+      if (this.name == "*" && this.children[0].type == 2 && (this.children[1].type == 1 || this.children[1].type == 3)){
+        if (this.children[0].value == -1) return "-" + this.children[1].toString;
+        return this.children[0].value + this.children[1].toString;
+      }
+      return this.children[0].toString + this.name + this.children[1].toString;
+    }
+    if (this.type == 1) return this.name;
+    if (this.type == 2) return this.value + "";
+    if (this.type == 3){
+      var str1 = this.name + "(" + this.children[0].toString;
+      for (var i = 1; i < this.children.length; i++){
+        str1 += "," + this.children[i].toString;
+      }
+      return str1 + ")";
+    }
+  }
+}
+class Item {
+  constructor(i = 0){
+    this.i = i;
+  }
+}
+
+var system;
+function edited(str, id){
+  if (id == 0){
+    system = new System();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (System.readSystem(str, system)){
+      system.equations[0].draw();
+      var str1 = "";
+      var stri = str.split('\n');
+      for (var i = 0; i < system.equations.length; i++){
+        str1 += (system.types[i] ? system.equations[i].toString : "") + '\n';
+        stri[i] = stri[i].length;
+      }
+      document.getElementById("output_text").value = str1;
+      str1 = "";
+      var num_cols = document.getElementById("equations").cols;
+      for (var i = 0; i < system.equations.length; i++){
+        str1 += ["", "Eq.", "v.Def", "f.Def"][system.types[i]] + '\n';
+        while (stri[i] > num_cols){
+          stri[i] -= num_cols;
+          str1 += '\n';
+        }
+      }
+      document.getElementById("definitions").value = str1;
+    } else {
+      document.getElementById("output_text").value = "";
+      document.getElementById("definitions").value = "";
+    }
+  } else if (id == 1){
+    var command = new Node(), dict = {};
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (System.readDifferentiation(str, new Item(0), command)){
+      command.draw();
+    } else if (System.acceptEvaluation(str, new Item(), command, dict)){
+
+    }
+  }
+}
+
+</script>
+</body>
+</html>

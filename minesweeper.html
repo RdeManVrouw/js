@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&display=swap" rel="stylesheet">
+</head>
+<body onresize="resize()">
+  <div id="container" style="position:absolute;background-color:lightgray;z-index:0"></div>
+  <div id="screen" style="position:absolute;z-index:2"></div>
+<script>
+var grid = [];
+var opened = [];
+var colors = [];
+var surround = [];
+var width = 20;
+for (var y = 0; y < width; y++){
+  for (var x = 0; x < width; x++){
+    grid.push(0);
+    opened.push(false);
+    surround[x + y * width] = [];
+    for (var dx = -1; dx <= 1; dx++){
+      for (var dy = -1; dy <= 1; dy++){
+        if (x+dx >= 0 && x+dx < width && y+dy >= 0 && y+dy < width && (dx != 0 || dy != 0)) surround[x + y * width].push(x+dx + (y+dy)*width);
+      }
+    }
+    var div = document.createElement("div");
+    div.style.width = (100 / width) + "%";
+    div.style.height = (100 / width) + "%";
+    div.style.position = "absolute";
+    div.style.left = (100 * x / width) + "%";
+    div.style.top = (100 * y / width) + "%";
+    div.style.zIndex = 1;
+    div.style.fontFamily = 'Anton';
+    div.style.fontWeight = "bold";
+    div.style.textAlign = "center";
+    div.id = x + y * width;
+    var col = 200 + 6 * ((x + y) % 2 == 0) * Math.random();
+    div.style.backgroundColor = "rgb(" + col + "," + col + "," + col + ")";
+    colors.push(div.style.backgroundColor);
+    document.getElementById("container").appendChild(div);
+  }
+}
+
+var left1, top1, h;
+function resize(){
+  var con = document.getElementById("container");
+  var scr = document.getElementById("screen");
+  if (window.innerWidth > window.innerHeight){
+    h = window.innerHeight * 0.9;
+    left1 = window.innerWidth * 0.5 - h * 0.5;
+    top1 = window.innerHeight * 0.05;
+  } else {
+    h = window.innerWidth * 0.9;
+    left1 = window.innerWidth * 0.05;
+    top1 = window.innerHeight * 0.5 - h * 0.5;
+  }
+  con.style.height = h + "px";
+  con.style.width = h + "px";
+  con.style.top = top1 + "px";
+  con.style.left = left1 + "px";
+  scr.style.height = h + "px";
+  scr.style.width = h + "px";
+  scr.style.top = top1 + "px";
+  scr.style.left = left1 + "px";
+  for (var i = 0; i < grid.length; i++) document.getElementById(i).style.fontSize = (0.7 * h / width) + "px";
+}
+resize();
+
+var directions = [-width - 1, -width, -width + 1, -1, 1, width - 1, width, width + 1];
+function openNode(index){
+  if (opened[index]) return;
+  document.getElementById(index).style.backgroundColor = "white";
+  document.getElementById(index).style.color = ["white", "blue", "green", "red", "rgb(0,0,150)", "rgb(150,0,0)", "lightblue", "black", "darkgray", "black"][grid[index]];
+  document.getElementById(index).innerHTML = ["", 1, 2, 3, 4, 5, 6, 7, 8, "*"][grid[index]];
+  opened[index] = true;
+  if (grid[index] == 0){
+    for (var i = 0; i < surround[index].length; i++) openNode(surround[index][i]);
+  }
+}
+
+var numBombs = Math.floor(0.2 * width * width);
+for (var i = 0; i < numBombs; i++){
+  var j, place = Math.floor(Math.random() * (grid.length - i));
+  for (j = 0; j < place; j++){
+    if (grid[j + 1] == 9) place++;
+  }
+  grid[j] = 9;
+  for (var k = 0; k < surround[j].length; k++) grid[surround[j][k]] += (grid[surround[j][k]] != 9);
+}
+
+var lastIndex = -1;
+document.getElementById("screen").onmousemove = function (e) {
+  if (lastIndex != -1) document.getElementById(lastIndex).style.backgroundColor = opened[lastIndex] ? "white" : colors[lastIndex];
+  var index = Math.floor((e.pageX - left1) / h * width) + width * Math.floor((e.pageY - top1) / h * width);
+  if (!(index < 0 || lastIndex >= width * width)) document.getElementById(lastIndex = index).style.backgroundColor = "rgb(190,190,190)";
+}
+document.getElementById("screen").onmouseleave = function (e) {
+  if (lastIndex != -1) document.getElementById(lastIndex).style.backgroundColor = opened[lastIndex] ? "white" : colors[lastIndex];
+  lastIndex = -1;
+}
+var startTime = 0;
+document.getElementById("screen").onmousedown = function (e) {
+  var index = Math.floor((e.pageX - left1) / h * width) + width * Math.floor((e.pageY - top1) / h * width);
+  if (index >= 0 && index < grid.length && document.getElementById(index).innerHTML != "F"){
+    startTime = Date.now();
+    setTimeout(function() { if (!opened[index]) document.getElementById(index).innerHTML = "F"; }, 300);
+  }
+}
+document.getElementById("screen").onmouseup = function (e) {
+  var index = Math.floor((e.pageX - left1) / h * width) + width * Math.floor((e.pageY - top1) / h * width);
+  if (index >= 0 && index < grid.length){
+    if (startTime == 0 || Date.now() - startTime < 300){
+      if (opened[index]){
+        var sum = grid[index];
+        for (var i = 0; i < surround[index].length; i++) sum -= (document.getElementById(surround[index][i]).innerHTML == "F");
+        if (sum == 0){
+          for (var i = 0; i < surround[index].length; i++){
+            if (document.getElementById(surround[index][i]).innerHTML != "F") openNode(surround[index][i]);
+          }
+        }
+      } else {
+        if (document.getElementById(index).innerHTML == "F"){
+          document.getElementById(index).innerHTML = "";
+        } else {
+          openNode(index);
+        }
+      }
+    }
+  }
+  startTime = 0;
+}
+
+</script>
+</body>
+</html>

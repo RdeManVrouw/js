@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <canvas id="map" style="position:absolute;left:0px;top:0px;z-index:1"></canvas>
+  <input id="input" type="range" value="1" min="0" max="8" oninput="param_changed()" style="position:absolute;z-index:2"></input><br>
+<script>
+var factor = window.innerWidth / window.innerHeight;
+var Xmin = -factor, Xmax = factor, Ymin = -1, Ymax = 1;
+var canvas = document.getElementById("map");
+canvas.width = window.innerWidth - 1;
+canvas.height = window.innerHeight - 1;
+var ctx = canvas.getContext("2d");
+
+class Vector2 {
+  constructor(x, y){
+    this.x = x;
+    this.y = y;
+  }
+  Multpl(x){
+    return new Vector2(this.x * x, this.y * x);
+  }
+  Add(v){
+    return new Vector2(this.x + v.x, this.y + v.y);
+  }
+  Sub(v) {
+    return new Vector2(this.x - v.x, this.y - v.y);
+  }
+  Dist(v){
+    return Math.hypot(this.x - v.x, this.y - v.y);
+  }
+  rotate(phi){
+    return new Vector2(this.x * Math.cos(phi) - this.y * Math.sin(phi), this.y * Math.cos(phi) + this.x * Math.sin(phi));
+  }
+  get magnitude(){
+    return Math.sqrt(this.x*this.x + this.y*this.y);
+  }
+  get normalized(){
+    return this.Multpl(1/this.magnitude);
+  }
+  static get zero(){
+    return new Vector2(0, 0);
+  }
+}
+class Circle {
+  static dToPxl = 2 / (Xmax - Xmin) * canvas.width;
+
+  constructor(m, r){
+    this.m = m;
+    this.r = r;
+  }
+
+  draw(color, offset = Vector2.zero, factor = 1){
+    circle(offset.Add(this.m.Multpl(factor)), this.r * factor, color);
+  }
+
+  isWithin(x){
+    return x.Dist(this.m) < this.r;
+  }
+}
+
+function Pt_On(x, y, color = "black"){
+  ctx.fillStyle = color;
+  ctx.fillRect(Math.round((x - Xmin)/(Xmax - Xmin)*(canvas.width - 1)) - 1, Math.round((y - Ymax)/(Ymin - Ymax)*(canvas.height - 1)) - 1, 3, 3);
+}
+function map(a, b, c, d){
+  Xmin = a;
+  Xmax = b;
+  Ymin = c;
+  Ymax = d;
+}
+function circle(m, r, color = "black"){
+  ctx.beginPath();
+  //ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.arc(Math.round((m.x - Xmin)/(Xmax - Xmin)*(canvas.width - 1)), Math.round((m.y - Ymax)/(Ymin - Ymax)*(canvas.height - 1)), r / (Xmax - Xmin) * canvas.width, 0, 2 * Math.PI);
+  //ctx.stroke();
+  ctx.fill();
+}
+function Vector2FromPxl(x, y){
+  return new Vector2(x/(canvas.width-1)*(Xmax - Xmin)+Xmin, y/(canvas.height-1)*(Ymin - Ymax)+Ymax);
+}
+function fractalCircles(circles, depth, x = Vector2.zero, factor = 1, color = "white"){
+  if (depth == 0){
+    return;
+  }
+  for (var i = 0; i < circles.length; i++){
+    if (circles[i].r * factor * Circle.dToPxl > 1){
+      circles[i].draw(color, x, factor);
+      fractalCircles(circles, depth - 1, x.Add(circles[i].m.Multpl(factor)), factor * circles[i].r, (color == "white") ? "red" : "white");
+    }
+  }
+}
+function param_changed(){
+  renderFrame();
+}
+
+var circles = [new Circle(new Vector2(-0.5, 0.5), 0.2)];
+function renderFrame(){
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  circle(Vector2.zero, 1, "red");
+  fractalCircles(circles, document.getElementById("input").value * 1);
+}
+renderFrame();
+function getSurface(){
+  var p = 1;
+  for (var i = 0; i < circles.length; i++){
+    p -= circles[i].r * circles[i].r;
+  }
+  return 1 / (2 - p);
+}
+
+var selected = null, offset;
+canvas.onmousedown = function (e) {
+  var pos = Vector2FromPxl(e.pageX, e.pageY);
+  for (var i = 0; i < circles.length; i++){
+    if (circles[i].isWithin(pos)){
+      selected = i;
+      offset = circles[i].m.Sub(pos);
+      return;
+    }
+  }
+  if (pos.magnitude < 1){
+    selected = circles.length;
+    circles.push(new Circle(pos, 0.2));
+    offset = circles[selected].m.Sub(pos);
+    renderFrame();
+  }
+}
+canvas.onmousemove = function (e) {
+  if (selected != null){
+    circles[selected].m = Vector2FromPxl(e.pageX, e.pageY).Add(offset);
+    renderFrame();
+  }
+}
+canvas.onmouseup = function () {
+  selected = null;
+}
+canvas.onwheel = function (e) {
+  var pos = Vector2FromPxl(e.pageX, e.pageY);
+  var factor = 1 + 0.1 * Math.sign(e.deltaY);
+  for (var i = 0; i < circles.length; i++){
+    if (circles[i].isWithin(pos)){
+      circles[i].r *= factor;
+      renderFrame();
+      return;
+    }
+  }
+}
+
+</script>
+</body>
+</html>
