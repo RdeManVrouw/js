@@ -230,9 +230,9 @@ function circle(m, r, color = "black"){
   ctx.arc(Math.round((m.x - Xmin)/(Xmax - Xmin)*(canvas.width - 1)), Math.round((m.y - Ymax)/(Ymin - Ymax)*(canvas.height - 1)), r / (Xmax - Xmin) * canvas.width, 0, 2 * Math.PI);
   ctx.stroke();
 }
-function text(str, x, y){
+function text(str, x, y, size = 30){
   ctx.fillStyle = "black";
-  ctx.font = "30px monospace";
+  ctx.font = size + "px monospace";
   ctx.textAlign = "center";
   ctx.fillText(str, x, y);
 }
@@ -268,7 +268,7 @@ var interval = setInterval(function () {
     updateRayCasts();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     text(folders[folder_index].title, canvas.width * 0.5, 50);
-    text(folders[folder_index].sub_title, canvas.width * 0.5, canvas.height - 50);
+    text(folders[folder_index].sub_title, canvas.width * 0.5, 90, 20);
     for (var i = folders.length - 1; i > folder_index; i--) folders[i].draw();
     for (var i = 0; i < folder_index; i++) folders[i].draw();
     folders[folder_index].draw(); // "#FECE00"
