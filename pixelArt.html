@@ -1,0 +1,706 @@
+<!DOCTYPE html>
+<html>
+<style>
+  * {
+    font-size: 20px;
+    font-family: monospace;
+  }
+
+  .penButton {
+    border: 2px solid white;
+    width: 250px;
+    text-align: left;
+  }
+
+  .textElement {
+    border: 2px solid lightgray;
+    margin-top: 2px;
+    left: 2px;
+    position: absolute;
+    font-size: 16px;
+  }
+</style>
+<body onresize="resize()">
+  <div id="left_container" style="position:absolute;width:25%;height:100%;top:0px;left:0%" onclick="resetPen()">
+    <input id="color1" type="color" value="#000000" onchange="colorChange()"></input>
+    <button id="background_button" onclick="changeBackground()">background: ON</button>
+    <button onclick="refocus()">focus</button><br><br>
+    <button class="penButton" id="defaultMouse" onclick="mainCanvas.loadPen('defaultMouse')">1: default</button><br>
+    <button class="penButton" id="brush" onclick="mainCanvas.loadPen('brush')">2: brush</button><br>
+    <button class="penButton" id="circleBrush" onclick="mainCanvas.loadPen('circleBrush')">3: circle brush</button><br>
+    <button class="penButton" id="eraser" onclick="mainCanvas.loadPen('eraser')">4: eraser</button><br>
+    <button class="penButton" id="colorPicker" onclick="mainCanvas.loadPen('colorPicker')">5: color picker</button><br>
+    <button class="penButton" id="only_background" onclick="only_background()">6: only background</button><br>
+    <button class="penButton" id="fillBrush" onclick="mainCanvas.loadPen('fillBrush')">7: fill</button>
+  </div>
+  <div id="middle_container" style="position:absolute;width:50%;height:100%;top:0px;left:25%;background-color:lightgray">
+    <canvas id="map" style="position:absolute;left:0px;top:0px;z-index:1;background-color:white"></canvas>
+
+  </div>
+  <div id="right_container" style="position:absolute;width:25%;height:100%;top:0px;left:75%" onclick="resetPen()">
+    <input class="textElement" id="width" type="text" value="64" onchange="imageSizeChange()"></input><br>
+    <input class="textElement" id="height" type="text" value="64" onchange="imageSizeChange()"></input><br><br>
+    <input class="textElement" id="file_name" type="text" placeholder="file name"></input><br>
+    <button style="border:2px solid white;margin-top:4px;position:absolute;font-size:16px;background-color:lightgray" onclick="downloadPNG()">export .png</button><br>
+    <button style="border:2px solid white;margin-top:4px;position:absolute;font-size:16px;background-color:lightgray" onclick="downloadTXT()">export .txt</button><br><br>
+    <input id="pixel_image_input" type="file" style="border:2px solid white;margin-top:4px;position:absolute;font-size:16px;background-color:lightgray">
+  </div>
+<script>
+
+Array.prototype.hasColor = function (object){
+  for (var i = 0; i < this.length; i++){
+    if (this[i] != null && this[i].hasColor(object)) return true;
+  }
+  return false;
+}
+class Vector2 {
+  constructor(x, y){
+    this.x = x;
+    this.y = y;
+  }
+
+  Add(v){
+    return new Vector2(this.x + v.x, this.y + v.y);
+  }
+}
+class Color {
+  constructor(r, g, b, a = 255){
+    this.r = r;
+    this.g = g;
+    this.b = b;
+    this.a = a;
+  }
+
+  equals(other){
+    if (other == null) return false;
+    return this.r == other.r && this.g == other.g && this.b == other.b && this.a == other.a;
+  }
+
+  hasColor(other){
+    return this.equals(other);
+  }
+
+  copy(){
+    return new Color(this.r, this.g, this.b, this.a);
+  }
+
+  toRGBAstring(){
+    return "rgba(" + this.r + "," + this.g + "," + this.b +" ," + (this.a / 255.0) + ")";
+  }
+
+  toCharCode(){
+    return String.fromCharCode(this.r) + String.fromCharCode(this.g) + String.fromCharCode(this.b) + String.fromCharCode(this.a);
+  }
+
+  toHEXstring(){
+    var str = this.b.toString(16);
+    if (str.length == 1) str = "0" + str;
+    str = this.g.toString(16) + str;
+    if (str.length == 3) str = "0" + str;
+    str = this.r.toString(16) + str;
+    if (str.length == 5) str = "0" + str;
+    return "#" + str;
+  }
+
+  static fromHEXstring(str){
+    return new Color(parseInt(str.substr(1, 2), 16), parseInt(str.substr(3, 2), 16), parseInt(str.substr(5, 2), 16));
+  }
+
+  static fromCharCode(str, i = 0){
+    return new Color(str.charCodeAt(i), str.charCodeAt(i + 1), str.charCodeAt(i + 2), str.charCodeAt(i + 3));
+  }
+
+  static get random(){
+    return new Color(Math.floor(Math.random() * 255), Math.floor(Math.random() * 255), Math.floor(Math.random() * 255), Math.floor(Math.random() * 255));
+  }
+}
+class PixelImage {
+  constructor(width, height){
+    this.width = width;
+    this.height = height;
+    this.grid = [];
+    for (var y = 0; y < height; y++){
+      this.grid[y] = [];
+      for (var x = 0; x < width; x++) this.grid[y][x] = null;
+    }
+  }
+
+  changeSize(w, h){
+    for (var y = 0; y < Math.min(h, this.height); y++){
+      while (this.grid[y].length < w) this.grid[y].push(null);
+      while (this.grid[y].length > w) this.grid[y].pop();
+    }
+    while (h < this.grid.length) this.grid.pop();
+    while (h > this.grid.length){
+      var arr = [];
+      for (var x = 0; x < w; x++) arr[x] = null;
+      this.grid.push(arr);
+    }
+    this.width = w;
+    this.height = h;
+  }
+
+  setPixel(x, y, color = null, onlyBackground = false){
+    if (x < 0 || x >= this.width || y < 0 || y >= this.height) return;
+    if (onlyBackground && this.grid[y][x] != null) return;
+    if (color == null){
+      this.grid[y][x] = null;
+      return;
+    }
+    this.grid[y][x] = color.copy();
+  }
+
+  copy(){
+    var output = new PixelImage(this.width, this.height);
+    for (var y = 0; y < this.height; y++){
+      for (var x = 0; x < this.width; x++) output.setPixel(x, y, this.grid[y][x]);
+    }
+    return output;
+  }
+
+  equals(other){
+    if (other.width != this.width || other.height != this.height) return false;
+    for (var y = 0; y < this.height; y++){
+      for (var x = 0; x < this.width; x++){
+        if (this.grid[y][x] == null && other.grid[y][x] == null) continue;
+        if (this.grid[y][x] == null && other.grid[y][x] != null) return false;
+        if (this.grid[y][x] != null && other.grid[y][x] == null) return false;
+        if (!this.grid[y][x].equals(other.grid[y][x])) return false;
+      }
+    }
+    return true;
+  }
+
+  floodFill(x, y, groundColor, newColor){
+    if (groundColor != null && newColor != null && newColor.equals(groundColor)) return;
+    if (groundColor == null && newColor == null) return;
+    var nodes = [new Vector2(x, y)];
+    while (nodes.length){
+      var node = nodes.pop();
+      var x = node.x, y = node.y;
+      if (x < 0 || x >= this.width || y < 0 || y >= this.height) continue;
+      if ((groundColor == null && this.grid[y][x] != null) || (groundColor != null && this.grid[y][x] == null)) continue;
+      if (groundColor != null && this.grid[y][x] != null && !this.grid[y][x].equals(groundColor)) continue;
+      this.setPixel(x, y, newColor);
+      nodes.push(new Vector2(x + 1, y), new Vector2(x, y + 1), new Vector2(x - 1, y), new Vector2(x, y - 1));
+    }
+  }
+}
+class Canvas {
+  static allCanvasses = [];
+  static maxNumberStates = 100;
+
+  constructor(canvas, imageWidth, imageHeight){
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.imageWidth = imageWidth;
+    this.imageHeight = imageHeight;
+    this.pixelSize = 1;
+    this.image = new PixelImage(imageWidth, imageHeight);
+    this.loadPen("brush");
+    Canvas.allCanvasses.push(this);
+    this.storedStates = [];
+    this.whiteBackground = false;
+  }
+
+  storeState(){
+    if (this.storedStates.length > 0 && this.image.equals(this.storedStates[this.storedStates.length - 1])) return;
+    if (this.storedStates.length == Canvas.maxNumberStates) this.storedStates.shift();
+    this.storedStates.push(this.image.copy());
+  }
+
+  recallState(){
+    if (this.storedStates.length == 0) return;
+    this.image = this.storedStates.pop();
+    this.changeImageSize(this.image.width, this.image.height);
+    resize();
+    this.rePaint();
+  }
+
+  setLeft(x){
+    this.canvas.style.left = x + "px";
+    this.canvasLeft = x;
+  }
+
+  setTop(y){
+    this.canvas.style.top = y + "px";
+    this.canvasTop = y;
+  }
+
+  changePixelSize(newWidth){
+    this.pixelSize = Math.floor(newWidth / this.imageWidth);
+    this.canvas.style.width = (this.pixelSize * this.imageWidth) + "px";
+    this.canvas.style.height = (this.pixelSize * this.imageHeight) + "px";
+    this.canvas.width = this.pixelSize * this.imageWidth;
+    this.canvas.height = this.pixelSize * this.imageHeight;
+  }
+
+  changeImageSize(newImageWidth, newImageHeight){
+    this.imageWidth = newImageWidth;
+    this.imageHeight = newImageHeight;
+    this.image.changeSize(newImageWidth, newImageHeight);
+    this.changePixelSize(this.canvas.width);
+  }
+
+  drawImage(pixelImage, x0 = 0, y0 = 0){
+    for (var x = x0; x < Math.min(this.imageWidth, pixelImage.width + x0); x++){
+      for (var y = y0; y < Math.min(this.imageHeight, pixelImage.height + y0); y++){
+        if (pixelImage.grid[y - y0][x - x0] != null){
+          this.ctx.fillStyle = pixelImage.grid[y - y0][x - x0].toRGBAstring();
+          this.ctx.fillRect(x * this.pixelSize, y * this.pixelSize, this.pixelSize, this.pixelSize);
+        }
+      }
+    }
+  }
+
+  addImage(pixelImage, x0 = 0, y0 = 0){
+    this.storeState();
+    for (var x = x0; x < Math.min(this.imageWidth, pixelImage.width + x0); x++){
+      for (var y = y0; y < Math.min(this.imageHeight, pixelImage.height + y0); y++){
+        if (pixelImage.grid[y - y0][x - x0] != null) this.image.grid[y][x] = pixelImage.grid[y - y0][x - x0].copy();
+      }
+    }
+  }
+
+  rePaint(){
+    if (this.whiteBackground){
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+    } else {
+      for (var x = 0; x < this.imageWidth; x++){
+        for (var y = 0; y < this.imageHeight; y++){
+          this.ctx.fillStyle = ((x + y) % 2 == 0) ? "rgb(245,245,245)" : "rgb(230,230,230)";
+          this.ctx.fillRect(x * this.pixelSize, y * this.pixelSize, this.pixelSize, this.pixelSize);
+        }
+      }
+    }
+    this.drawImage(this.image);
+  }
+
+  readPixelImage(x0 = 0, y0 = 0, w = this.imageWidth, h = this.imageHeight){
+    var output = new PixelImage(w, h);
+    for (var x = x0; x < x0 + w; x++){
+      for (var y = y0; y < y0 + h; y++){
+        if (this.image.grid[y][x] != null) output.grid[y - y0][x - x0] = this.image.grid[y][x].copy();
+      }
+    }
+    return output;
+  }
+
+  readDrawing(){
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (var x = 0; x < this.imageWidth; x++){
+      for (var y = 0; y < this.imageHeight; y++){
+        if (this.image.grid[y][x] != null){
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+    return this.readPixelImage(minX, minY, maxX - minX + 1, maxY - minY + 1);
+  }
+
+  extractPixelImage(x0 = 0, y0 = 0, w = this.imageWidth, h = this.imageHeight){
+    this.storeState();
+    var output = new PixelImage(w, h);
+    for (var x = x0; x < x0 + w; x++){
+      for (var y = y0; y < y0 + h; y++){
+        if (this.image.grid[y][x] != null){
+          output.grid[y - y0][x - x0] = this.image.grid[y][x].copy();
+          this.image.grid[y][x] = null;
+        }
+      }
+    }
+    return output;
+  }
+
+  PxlToIndex(x, y){
+    return new Vector2(Math.floor((x - this.canvasLeft - window.innerWidth * 0.25) / this.pixelSize), Math.floor((y - this.canvasTop) / this.pixelSize));
+  }
+
+  drawRectangle(v0, v1, color){
+    this.ctx.fillStyle = color;
+    var minX = Math.min(v0.x, v1.x);
+    var maxX = Math.max(v0.x, v1.x);
+    var minY = Math.min(v0.y, v1.y);
+    var maxY = Math.max(v0.y, v1.y);
+    this.ctx.fillRect(minX * this.pixelSize, minY * this.pixelSize, (maxX - minX + 1) * this.pixelSize, (maxY - minY + 1) * this.pixelSize);
+  }
+
+  loadPen(name = "defaultMouse"){
+    var buttons = document.getElementsByClassName("penButton");
+    for (var i = 0; i < buttons.length; i++) buttons[i].style.backgroundColor = "lightgray";
+    document.getElementById(name).style.backgroundColor = "gray";
+    document.getElementById("only_background").style.backgroundColor = Pen.drawsOnlyBackground ? "gray" : "lightgray";
+    this.canvas.onmousedown = undefined;
+    this.canvas.onmousemove = undefined;
+    this.canvas.onmouseup = undefined;
+    this.canvas.onmouseleave = undefined;
+    this.canvas.onwheel = undefined;
+    this.canvas.onclick = undefined;
+    this.rePaint();
+    this.pen = Pen[name]();
+    if (name == "defaultMouse"){
+      this.canvas.onmousedown = function (e) {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.isPenDown = true;
+        object.pen.last_position = object.PxlToIndex(e.pageX, e.pageY);
+        if (object.pen.selectedPixelImage != null && !object.pen.fallsInImage(object.pen.last_position)){
+          object.addImage(object.pen.selectedPixelImage, object.pen.selectedImagePosition.x, object.pen.selectedImagePosition.y);
+          object.pen.selectedPixelImage = null;
+          object.rePaint();
+        }
+      }
+      this.canvas.onmousemove = function (e) {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        var u = object.PxlToIndex(e.pageX, e.pageY);
+        if (object.pen.selectedPixelImage == null){
+          object.rePaint();
+          if (object.pen.isPenDown) object.drawRectangle(object.pen.last_position, u, "rgba(180, 180, 180, 0.5)");
+        } else {
+          if (object.pen.isPenDown && (u.x != object.pen.last_position.x || u.y != object.pen.last_position.y)){
+            object.pen.selectedImagePosition.x += u.x - object.pen.last_position.x;
+            object.pen.selectedImagePosition.y += u.y - object.pen.last_position.y;
+            object.rePaint();
+            object.drawImage(object.pen.selectedPixelImage, object.pen.selectedImagePosition.x, object.pen.selectedImagePosition.y);
+            object.drawRectangle(object.pen.selectedImagePosition, object.pen.selectedImagePosition.Add(new Vector2(object.pen.selectedPixelImage.width - 1, object.pen.selectedPixelImage.height - 1)), "rgba(180, 180, 180, 0.5)");
+            object.pen.last_position = u;
+          }
+        }
+      }
+      this.canvas.onmouseup = function (e) {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.isPenDown = false;
+        if (object.pen.selectedPixelImage == null){
+          var u = object.PxlToIndex(e.pageX, e.pageY);
+          var minX = Math.min(u.x, object.pen.last_position.x);
+          var maxX = Math.max(u.x, object.pen.last_position.x);
+          var minY = Math.min(u.y, object.pen.last_position.y);
+          var maxY = Math.max(u.y, object.pen.last_position.y);
+          object.pen.selectedImagePosition = new Vector2(minX, minY);
+          object.pen.selectedPixelImage = object.extractPixelImage(minX, minY, maxX - minX + 1, maxY - minY + 1);
+        }
+      }
+      this.canvas.onmouseleave = function () {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.isPenDown = false;
+      }
+    } else if (name == "brush" || name == "circleBrush" || name == "eraser"){
+      this.canvas.onmousedown = function (e) {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.isPenDown = true;
+        object.storeState();
+        object.pen.drawBrushStroke(object, object.PxlToIndex(e.pageX, e.pageY));
+        object.rePaint();
+      }
+      this.canvas.onmousemove = function (e) {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        var u = object.PxlToIndex(e.pageX, e.pageY);
+        if (object.pen.isPenDown) object.pen.drawBrushStroke(object, u);
+        object.rePaint();
+        object.pen.drawBrushGhost(object, u);
+      }
+      this.canvas.onmouseup = function () {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.isPenDown = false;
+      }
+      this.canvas.onmouseleave = function () {
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.rePaint();
+      }
+      this.canvas.onwheel = function (e){
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        object.pen.setRadius(Pen.r + Math.sign(e.deltaY));
+        object.rePaint();
+        object.pen.drawBrushGhost(object, object.PxlToIndex(e.pageX, e.pageY));
+      }
+    } else if (name == "colorPicker"){
+      this.canvas.onclick = function (e){
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        var u = object.PxlToIndex(e.pageX, e.pageY);
+        if (object.image.grid[u.y][u.x] == null) return;
+        document.getElementById("color1").value = object.image.grid[u.y][u.x].toHEXstring();
+        colorChange();
+        mainCanvas.loadPen("brush");
+      }
+    } else if (name == "fillBrush"){
+      this.canvas.onclick = function (e){
+        var object = Canvas.selectByCanvas(this);
+        if (object == null) return;
+        var u = object.PxlToIndex(e.pageX, e.pageY);
+        mainCanvas.storeState();
+        object.image.floodFill(u.x, u.y, object.image.grid[u.y][u.x], object.pen.color);
+        mainCanvas.rePaint();
+      }
+    }
+  }
+
+  static selectByCanvas(c){
+    for (var i = 0; i < Canvas.allCanvasses.length; i++){
+      if (Canvas.allCanvasses[i].canvas == c) return Canvas.allCanvasses[i];
+    }
+    return null;
+  }
+}
+class Pen {
+  static r = 1;
+  static drawsOnlyBackground = false
+  static ctrlC_pixelImage = null;
+
+  constructor(name){
+    this.name = name;
+    this.isPenDown = false;
+    this.selectedPixelImage = null;
+    this.selectedImagePosition = null;
+    this.brushShape = [new Vector2(0, 0)];
+  }
+
+  static defaultMouse(){
+    return new Pen("defaultMouse");
+  }
+
+  fallsInImage(pos){
+    return pos.x >= this.selectedImagePosition.x && pos.x < this.selectedImagePosition.x + this.selectedPixelImage.width && pos.y >= this.selectedImagePosition.y && pos.y < this.selectedImagePosition.y + this.selectedPixelImage.height;
+  }
+
+  static brush(){
+    var output = new Pen("brush");
+    output.color = Color.fromHEXstring(document.getElementById("color1").value);
+    output.setRadius = function (r){
+      if (r < 0 || r > 20) return;
+      this.brushShape = [];
+      for (var x = -r; x <= r; x++){
+        for (var y = -r; y <= r; y++) this.brushShape.push(new Vector2(x, y));
+      }
+      Pen.r = r;
+    }
+    output.setRadius(Pen.r);
+    return output;
+  }
+
+  static circleBrush(){
+    var output = new Pen("circleBrush");
+    output.color = Color.fromHEXstring(document.getElementById("color1").value);
+    output.setRadius = function (r){
+      if (r < 0 || r > 20) return;
+      this.brushShape = [];
+      for (var x = -r; x <= r; x++){
+        for (var y = -r; y <= r; y++){
+          if (x * x + y * y <= r * r) this.brushShape.push(new Vector2(x, y));
+        }
+      }
+      Pen.r = r;
+    }
+    output.setRadius(Pen.r);
+    return output;
+  }
+
+  static eraser(){
+    var output = Pen.brush();
+    output.color = null;
+    output.name = "eraser";
+    return output;
+  }
+
+  static colorPicker(){
+    return new Pen("colorPicker");
+  }
+
+  static fillBrush(){
+    var output = new Pen("fillBrush");
+    output.color = Color.fromHEXstring(document.getElementById("color1").value);
+    return output;
+  }
+
+  drawBrushStroke(canvas, v){
+    for (var i = 0; i < this.brushShape.length; i++) canvas.image.setPixel(this.brushShape[i].x + v.x, this.brushShape[i].y + v.y, this.color, Pen.drawsOnlyBackground);
+  }
+
+  drawBrushGhost(canvas, v){
+    canvas.ctx.fillStyle = "rgba(180, 180, 180, 0.5)";
+    for (var i = 0; i < this.brushShape.length; i++) canvas.ctx.fillRect(canvas.pixelSize * (v.x + this.brushShape[i].x), canvas.pixelSize * (v.y + this.brushShape[i].y), canvas.pixelSize, canvas.pixelSize);
+  }
+}
+
+var mainCanvas = new Canvas(document.getElementById("map"), 64, 64);
+
+function resize(){
+  var w = window.innerWidth, h = window.innerHeight;
+  if ((h - 40) / (w * 0.5 - 40) > mainCanvas.imageHeight / mainCanvas.imageWidth){
+    mainCanvas.changePixelSize(w * 0.5 - 40);
+  } else {
+    mainCanvas.changePixelSize((h - 40) * mainCanvas.imageWidth / mainCanvas.imageHeight);
+  }
+  mainCanvas.setLeft(w * 0.25 - mainCanvas.canvas.width * 0.5);
+  mainCanvas.setTop(h * 0.5 - mainCanvas.canvas.height * 0.5);
+  mainCanvas.rePaint();
+}
+resize();
+
+function colorChange(){
+  mainCanvas.pen.color = Color.fromHEXstring(document.getElementById("color1").value);
+}
+function resetPen(){
+  if (mainCanvas.pen.selectedPixelImage != null){
+    mainCanvas.addImage(mainCanvas.pen.selectedPixelImage, mainCanvas.pen.selectedImagePosition.x, mainCanvas.pen.selectedImagePosition.y);
+    mainCanvas.pen.selectedPixelImage = null;
+  }
+  mainCanvas.rePaint();
+}
+function imageSizeChange(){
+  var wid = document.getElementById("width").value * 1;
+  var hig = document.getElementById("height").value * 1;
+  if (isNaN(wid) || isNaN(hig) || wid > 256 || hig > 256 || wid < 1 || hig < 1) return;
+  mainCanvas.storeState();
+  mainCanvas.changeImageSize(wid, hig);
+  resize();
+}
+function changeBackground(){
+  mainCanvas.whiteBackground = !mainCanvas.whiteBackground;
+  document.getElementById("background_button").innerHTML = "background: " + (mainCanvas.whiteBackground ? "OFF" : "ON");
+  mainCanvas.rePaint();
+}
+function only_background(){
+  Pen.drawsOnlyBackground = !Pen.drawsOnlyBackground;
+  document.getElementById("only_background").style.backgroundColor = Pen.drawsOnlyBackground ? "gray" : "lightgray";
+}
+function refocus(){
+  mainCanvas.storeState();
+  mainCanvas.image = mainCanvas.readDrawing();
+  mainCanvas.changeImageSize(mainCanvas.image.width, mainCanvas.image.height);
+  document.getElementById("width").value = mainCanvas.image.width;
+  document.getElementById("height").value = mainCanvas.image.height;
+  resize();
+  mainCanvas.rePaint();
+}
+
+function downloadPNG(){
+  var filename = document.getElementById("file_name").value;
+  exportCanvasAsPNG(filename.length ? filename : "test");
+}
+function downloadTXT(){
+  var filename = document.getElementById("file_name").value;
+  exportCanvasAsTXT(filename.length ? filename : "test");
+}
+
+document.getElementById('pixel_image_input').addEventListener('change', function() {
+  var fr = new FileReader();
+  fr.onload = function () {
+    var str = fr.result;
+    var newPixelImage = new PixelImage(str.charCodeAt(0) + 1, str.charCodeAt(1) + 1);
+    var backColor = Color.fromCharCode(str, 2);
+    for (var y = 0; y < newPixelImage.height; y++){
+      for (var x = 0; x < newPixelImage.width; x++){
+        var c = Color.fromCharCode(str, 6 + 4 * (y * newPixelImage.width + x));
+        if (c.equals(backColor)) continue;
+        newPixelImage.grid[y][x] = c;
+      }
+    }
+    mainCanvas.storeState();
+    mainCanvas.image = newPixelImage;
+    mainCanvas.changeImageSize(newPixelImage.width, newPixelImage.height);
+    document.getElementById("width").value = newPixelImage.width;
+    document.getElementById("height").value = newPixelImage.height;
+    resize();
+    mainCanvas.rePaint();
+  }
+  fr.readAsText(this.files[0]);
+});
+
+document.onkeydown = function (e){
+  if (e.keyCode == 90) mainCanvas.recallState();
+  if (e.keyCode > 48 && e.keyCode < 58){
+    var el = document.getElementsByClassName("penButton");
+    if (e.keyCode - 49 < el.length) el[e.keyCode - 49].click();
+  }
+  if (e.keyCode == 67 && mainCanvas.pen.selectedPixelImage != null && mainCanvas.pen.name == "defaultMouse"){ // 'c'
+    Pen.ctrlC_pixelImage = mainCanvas.pen.selectedPixelImage;
+    mainCanvas.pen.selectedPixelImage = null;
+    mainCanvas.pen.selectedImagePosition = null;
+    mainCanvas.rePaint();
+  }
+  if (e.keyCode == 86 && Pen.ctrlC_pixelImage != null && mainCanvas.pen.name == "defaultMouse"){ // 'v'
+    if (mainCanvas.pen.selectedPixelImage != null) mainCanvas.addImage(mainCanvas.pen.selectedPixelImage, mainCanvas.pen.selectedImagePosition.x, mainCanvas.pen.selectedImagePosition.y);
+    mainCanvas.pen.selectedPixelImage = Pen.ctrlC_pixelImage;
+    mainCanvas.pen.selectedImagePosition = new Vector2(0, 0);
+    mainCanvas.rePaint();
+    mainCanvas.drawImage(mainCanvas.pen.selectedPixelImage, mainCanvas.pen.selectedImagePosition.x, mainCanvas.pen.selectedImagePosition.y);
+    mainCanvas.drawRectangle(mainCanvas.pen.selectedImagePosition, mainCanvas.pen.selectedImagePosition.Add(new Vector2(mainCanvas.pen.selectedPixelImage.width - 1, mainCanvas.pen.selectedPixelImage.height - 1)), "rgba(180, 180, 180, 0.5)");
+  }
+  if (e.keyCode == 46 && mainCanvas.pen.selectedPixelImage != null && mainCanvas.pen.name == "defaultMouse"){
+    mainCanvas.pen.selectedPixelImage = null;
+    mainCanvas.pen.selectedImagePosition = null;
+    mainCanvas.rePaint();
+  }
+}
+
+function exportCanvasAsPNG(fileName = "test") {
+  var pixelImage = mainCanvas.readDrawing();
+  var canvas = document.createElement("canvas");
+  var ctx = canvas.getContext("2d");
+  canvas.width = pixelImage.width * 10;
+  canvas.height = pixelImage.height * 10;
+  for (var x = 0; x < pixelImage.width; x++){
+    for (var y = 0; y < pixelImage.height; y++){
+      if (pixelImage.grid[y][x] == null) continue;
+      ctx.fillStyle = pixelImage.grid[y][x].toRGBAstring();
+      ctx.fillRect(10 * x, 10 * y, 10, 10);
+    }
+  }
+  document.body.appendChild(canvas);
+  var imgURL = canvas.toDataURL("image/png");
+  document.body.removeChild(canvas);
+
+  var dlLink = document.createElement('a');
+  dlLink.download = fileName;
+  dlLink.href = imgURL;
+  dlLink.dataset.downloadurl = ["image/png", dlLink.download, dlLink.href].join(':');
+  document.body.appendChild(dlLink);
+  dlLink.click();
+  document.body.removeChild(dlLink);
+}
+/*
+1 byte  -   width - 1
+1 byte  -   height - 1
+4 bytes -   background color
+N bytes -   pixels (4 bytes per pixel)
+*/
+function exportCanvasAsTXT(filename = "test"){
+  var pixelImage = mainCanvas.readDrawing();
+  var backColor = Color.random;
+  while (pixelImage.grid.hasColor(backColor)) backColor = Color.random;
+  var backColorCharCode = backColor.toCharCode();
+  var text = String.fromCharCode(pixelImage.width - 1) + String.fromCharCode(pixelImage.height - 1) + backColorCharCode;
+  for (var y = 0; y < pixelImage.height; y++){
+    for (var x = 0; x < pixelImage.width; x++) text += (pixelImage.grid[y][x] == null) ? backColorCharCode : pixelImage.grid[y][x].toCharCode();
+  }
+  let textFileAsBlob = new Blob([text], { type: "text/plain" });
+  let downloadLink = document.createElement('a');
+  downloadLink.download = filename + ".txt";
+  downloadLink.innerHTML = 'Download File';
+
+  if (window.webkitURL != null) {
+    downloadLink.href = window.webkitURL.createObjectURL(textFileAsBlob);
+  } else {
+    downloadLink.href = window.URL.createObjectURL(textFileAsBlob);
+    downloadLink.style.display = 'none';
+    document.body.appendChild(downloadLink);
+  }
+  downloadLink.click();
+
+}
+
+</script>
+</body>
+</html>
