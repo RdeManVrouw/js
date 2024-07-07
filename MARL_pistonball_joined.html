@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html>
+<body>
+  <canvas id="map1" style="position:absolute;left:10px;top:10px;border:2px solid black" width="240" height="480"></canvas>
+  <canvas id="map2" style="position:absolute;left:800px;top:10px;border:2px solid black" width="600" height="600"></canvas>
+  <button onclick="switch_state()" style="position:absolute;left:10px;top:500px">learn</button>
+  <input id="import_NN" type="file" style="position:absolute;left:10px;top:525px;z-index:1"></input>
+  <button onclick="export_NN()" style="position:absolute;left:60px;top:500px;z-index:1">export NN</button>
+  <button onclick="switch_visualize()" style="position:absolute;left:265px;top:500px;z-index:1">visualize</button>
+  <button onclick="exportTXT(graph_data.replaceAll('.', ','), 'graph_data')" style="position:absolute;left:140px;top:500px;z-index:1">export graph data</button>
+  <button onclick="record(this)" style="position:absolute;left:335px;top:500px">start recording</button>
+  <button onclick="export_checkpoint()" style="position:absolute;left:440px;top:500px">export checkpoint</button>
+  <p id="p_0" style="position:absolute;left:20px;top:550px"></p>
+  <p id="p_1" style="position:absolute;left:20px;top:580px"></p>
+  <p id="p_2" style="position:absolute;left:170px;top:550px"></p>
+  <p id="p_3" style="position:absolute;left:170px;top:580px"></p>
+  <script src="neuronnet.js"></script>
+  <script src="camera_window.js"></script>
+<script>
+//  The environment defined in here was inspired by https://pettingzoo.farama.org/environments/butterfly/pistonball/
+var canvas1 = document.getElementById("map1");
+var ctx1 = canvas1.getContext("2d");
+var canvas2 = document.getElementById("map2");
+var ctx2 = canvas2.getContext("2d");
+
+const NUM_AGENTS = 8;
+const NUM_BREAKS = 1;
+const win1 = new Window(ctx1, NUM_AGENTS * 40, 480, 0, NUM_AGENTS * 400 / 480, 0, 10);
+canvas1.width = NUM_AGENTS * 40;
+const INPUT_WINDOW = 2;
+
+Array.prototype.argmin = function (){
+  var idx = 0;
+  for (var i = 1; i < this.length; i++) if (this[i] < this[idx]) idx = i;
+  return idx;
+}
+Array.prototype.argmax = function (){
+  var idx = 0;
+  for (var i = 1; i < this.length; i++) if (this[i] > this[idx]) idx = i;
+  return idx;
+}
+
+function circleIntersect(x0, v, c, r){
+  var discr = 4 * (Math.sq(v.Dot(x0.Sub(c))) - v.magnitude2 * (x0.Sub(c).magnitude2 - r * r));
+  if (discr < 0) return null;
+  discr = Math.sqrt(discr);
+  var t0 = (-2 * v.Dot(x0.Sub(c)) + discr) / (2 * v.magnitude2);
+  var t1 = (-2 * v.Dot(x0.Sub(c)) - discr) / (2 * v.magnitude2);
+  if (t0 < 0 && t1 < 0) return null;
+  return (t0 < 0 || t1 < 0) ? Math.max(t0, t1) : Math.min(t0, t1);
+}
+class Action {
+  static upp = 0;
+  static up = 1;
+  static nothing = 2;
+  static down = 3;
+  static downn = 4;
+  static broken = 5;
+  static actions = [Action.upp, Action.up, Action.nothing, Action.down, Action.downn, Action.broken];
+  static vectors = [[1], [0.5], [0], [-0.5], [-1], [0.2]];
+}
+class State {
+  constructor(environment){
+    this.center = environment.center.copy();
+    this.velocity = environment.velocity.copy();
+    this.gridWidth = environment.gridWidth;
+    this.positions = [...environment.positions];
+    this.piston_velocities = [...environment.piston_velocities];
+    this.isBroken = [...environment.isBroken];
+  }
+
+  observation(index){
+    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y];
+    for (var i = index - INPUT_WINDOW; i <= index + INPUT_WINDOW; i++){
+      if (i < 0 || i >= this.positions.length){
+        observation.push(0, 0, 0);
+      } else {
+        observation.push(this.positions[i], this.isBroken[i] * 1, this.piston_velocities[i]);
+      }
+    }
+    return observation;
+  }
+}
+class Environment {
+  static GRAVITY = -9.81;
+
+  constructor(num_agents, num_breaks){
+    this.num_agents = num_agents;
+    this.num_breaks = num_breaks;
+    this.positions = new Array(num_agents).fill(0.5);
+    this.piston_velocities = new Array(num_agents).fill(0);
+    this.isBroken = new Array(num_agents).fill(false);
+    this.radius = 0.9;
+    this.center = new Vector2(0.5 * Math.random() * 4.167 + this.radius, 0.5 + this.radius);
+    this.velocity = Vector2.zero;
+    this.orientation = new Matrix2();
+    this.angular_velocity = 0;
+    this.normal_acceleration = Vector2.zero;
+    this.gridWidth = win1.window.Xmax / num_agents;
+    this.pistonWidth = this.gridWidth - 0.1;
+    this.pistonPolygon = new Polygon([new Vector2(0.5 * this.pistonWidth, 0.15), new Vector2(-0.5 * this.pistonWidth, 0.15), new Vector2(-0.5 * this.pistonWidth, -0.15), new Vector2(0.5 * this.pistonWidth, -0.15)]);
+    this.e = 0.5;
+    this.mass = 3 * Math.PI * this.radius * this.radius;
+    this.invInertia = 2 / (this.mass * this.radius * this.radius);
+    this.static_friction = 0.15;
+    this.dynamic_friction = 0.075;
+    this.roll_resistance_coeff = 0.02;
+    this.air_resistance_coeff = 0.1;
+    this.resetState();
+  }
+
+  rayCast(i, v, position = this.center){
+    var x0 = (i + 0.5) * this.gridWidth - 0.5 * this.pistonWidth - this.radius;
+    var x1 = (i + 0.5) * this.gridWidth + 0.5 * this.pistonWidth + this.radius;
+    var y0 = this.positions[i] - 0.3 - this.radius;
+    var y1 = this.positions[i] + this.radius;
+    if (v.x == 0 && v.y == 0) return Infinity;
+    var is_inside = this.intersectsPiston(i);
+    var x = position.copy();
+    if (is_inside){
+      x = x.Add(v.normalized.Multpl(20));
+      v.x = -v.x;
+      v.y = -v.y;
+    }
+    var time = Infinity, contact_point;
+    if (v.x){
+      var t0 = (x0 - x.x) / v.x;
+      if (t0 >= 0 && t0 < time){
+        var y_contact = x.y + v.y * t0;
+        if (y_contact > y0 + this.radius && y_contact <= y1 - this.radius){
+          time = t0;
+          contact_point = new Vector2(x0 + this.radius, y_contact);
+        }
+      }
+      var t1 = (x1 - x.x) / v.x;
+      if (t1 >= 0 && t1 < time){
+        var y_contact = x.y + v.y * t1;
+        if (y_contact > y0 + this.radius && y_contact <= y1 - this.radius){
+          time = t1;
+          contact_point = new Vector2(x1 - this.radius, y_contact);
+        }
+      }
+    }
+    if (v.y){
+      var t0 = (y0 - x.y) / v.y;
+      if (t0 >= 0 && t0 < time){
+        var x_contact = x.x + v.x * t0;
+        if (x_contact > x0 + this.radius && x_contact <= x1 - this.radius){
+          time = t0;
+          contact_point = new Vector2(x_contact, y0 + this.radius);
+        }
+      }
+      var t1 = (y1 - x.y) / v.y;
+      if (t1 >= 0 && t1 < time){
+        var x_contact = x.x + v.x * t1;
+        if (x_contact > x0 + this.radius && x_contact <= x1 - this.radius){
+          time = t1;
+          contact_point = new Vector2(x_contact, y1 - this.radius);
+        }
+      }
+    }
+    var piston_center = new Vector2(0.5 * (x0 + x1), 0.5 * (y0 + y1));
+    for (var j = 0; j < this.pistonPolygon.verteces.length; j++){
+      var corner = piston_center.Add(this.pistonPolygon.verteces[j]);
+      var t = circleIntersect(x, v, corner, this.radius);
+      if (t != null && t < time){
+        time = t;
+        contact_point = corner;
+      }
+    }
+    if (time == Infinity) return Infinity;
+    if (is_inside) time = 20 / v.magnitude - time;
+    return time;
+  }
+
+  intersectsPiston(i){
+    var x0 = (i + 0.5) * this.gridWidth - 0.5 * this.pistonWidth;
+    var x1 = (i + 0.5) * this.gridWidth + 0.5 * this.pistonWidth;
+    var y0 = this.positions[i] - 0.3;
+    var y1 = this.positions[i];
+    return (this.center.x >= x0 && this.center.x <= x1 && (Math.abs(this.center.y - y1) < this.radius || Math.abs(this.center.y - y0) < this.radius)) ||
+           (this.center.y >= y0 && this.center.y <= y1 && (Math.abs(this.center.x - x1) < this.radius || Math.abs(this.center.x - x0) < this.radius)) ||
+           (Math.sq(this.center.x - x0) + Math.sq(this.center.y - y0) < this.radius * this.radius) ||
+           (Math.sq(this.center.x - x1) + Math.sq(this.center.y - y0) < this.radius * this.radius) ||
+           (Math.sq(this.center.x - x1) + Math.sq(this.center.y - y1) < this.radius * this.radius) ||
+           (Math.sq(this.center.x - x0) + Math.sq(this.center.y - y1) < this.radius * this.radius);
+  }
+
+  contactPoint(i){
+    var x0 = (i + 0.5) * this.gridWidth - 0.5 * this.pistonWidth;
+    var x1 = (i + 0.5) * this.gridWidth + 0.5 * this.pistonWidth;
+    var y0 = this.positions[i] - 0.3;
+    var y1 = this.positions[i];
+    if (this.center.x > x0 && this.center.x < x1) return new Vector2(this.center.x, (this.center.y > 0.5 * (y0 + y1)) ? y1 : y0);
+    if (this.center.y > y0 && this.center.y < y1) return new Vector2((this.center.x > 0.5 * (x0 + x1)) ? x1 : x0, this.center.y);
+    return new Vector2(x0 * (this.center.x < x1) + x1 * (this.center.x >= x1), y0 * (this.center.y < y1) + y1 * (this.center.y >= y1));
+  }
+
+  step(dt){
+    var roll_friction = this.roll_resistance_coeff * this.normal_acceleration.magnitude * this.mass;
+    this.velocity.x += (-(this.air_resistance_coeff + roll_friction) * this.velocity.x + this.normal_acceleration.x) * dt;
+    this.velocity.y += (-(this.air_resistance_coeff + roll_friction) * this.velocity.y + Environment.GRAVITY + this.normal_acceleration.y) * dt;
+    this.center.x += this.velocity.x * dt;
+    this.center.y += this.velocity.y * dt;
+    this.orientation.rotate(this.angular_velocity * dt);
+    this.angular_velocity += -roll_friction * this.angular_velocity * dt;
+    this.normal_acceleration.x = 0;
+    this.normal_acceleration.y = 0;
+    for (var i = 0; i < this.num_agents; i++){
+      this.positions[i] += dt * this.piston_velocities[i];
+      if (this.positions[i] <= 0.5){
+        this.positions[i] = 0.5;
+        this.piston_velocities[i] = 0;
+      }
+      if (this.positions[i] >= 0.5 + 2 * this.radius){
+        this.positions[i] = 0.5 + 2 * this.radius;
+        this.piston_velocities[i] = 0;
+      }
+    }
+    var i0 = Math.max(0, Math.floor((this.center.x - this.radius) / this.gridWidth));
+    var i1 = Math.min(this.num_agents - 1, Math.floor((this.center.x + this.radius) / this.gridWidth));
+    var contact_points = [], collided = false;
+    var collision_indeces = [];
+    for (var i = i0; i <= i1; i++){
+      if (this.center.y - this.radius > this.positions[i] || !this.intersectsPiston(i)) continue;
+      var contact_point = this.contactPoint(i);
+      contact_points.push(contact_point);
+      collision_indeces.push(i);
+      collided = true;
+    }
+    if (!collided) return;
+    var normals = [];
+    switch (contact_points.length){
+        case 1:
+        var n = this.center.Sub(contact_points[0]).normalized;
+        this.center = contact_points[0].Add(n.Multpl(this.radius));
+        normals = [n];
+        break;
+      case 2:
+        var t = Math.sqrt(this.radius * this.radius / contact_points[0].Dist2(contact_points[1]) - 0.25);
+        var p0 = Vector2.average(contact_points[0], contact_points[1]).Add(contact_points[0].Sub(contact_points[1]).left.Multpl(t));
+        var p1 = Vector2.average(contact_points[0], contact_points[1]).Sub(contact_points[0].Sub(contact_points[1]).left.Multpl(t));
+        this.center = (this.center.Dist2(p0) < this.center.Dist2(p1)) ? p0 : p1;
+        normals = [this.center.Sub(contact_points[0]).normalized, this.center.Sub(contact_points[1]).normalized];
+        break;
+      default:
+        var minimal = Infinity, vector, index_i, index_j;
+        for (var i = 0; i < contact_points.length - 1; i++){
+          for (var j = i + 1; j < contact_points.length; j++){
+            var t = Math.sqrt(this.radius * this.radius / contact_points[i].Dist2(contact_points[j]) - 0.25);
+            var p0 = Vector2.average(contact_points[i], contact_points[j]).Add(contact_points[i].Sub(contact_points[j]).left.Multpl(t));
+            var p1 = Vector2.average(contact_points[i], contact_points[j]).Sub(contact_points[i].Sub(contact_points[j]).left.Multpl(t));
+            if (this.center.Dist2(p0) < minimal){
+              minimal = this.center.Dist2(p0);
+              vector = p0;
+              index_i = i;
+              index_j = j;
+            }
+            if (this.center.Dist2(p1) < minimal){
+              minimal = this.center.Dist2(p1);
+              vector = p1;
+              index_i = i;
+              index_j = j;
+            }
+          }
+        }
+        this.center = vector;
+        normals = [this.center.Sub(contact_points[index_i]).normalized, this.center.Sub(contact_points[index_j]).normalized];
+        break;
+    }
+    var delta_velocity = Vector2.zero;
+    for (var i = 0; i < normals.length; i++){
+      var m = -(1 + this.e) * new Vector2(this.velocity.x, this.velocity.y - this.piston_velocities[collision_indeces[i]]).Dot(normals[i]) / normals.length;
+      delta_velocity.x += normals[i].x * m;
+      delta_velocity.y += normals[i].y * m;
+    }
+    this.velocity = this.velocity.Add(delta_velocity);
+    var normal_forces = [0];
+    switch (normals.length){
+      case 1:
+        if (normals[0].y > 0){
+          normal_forces[0] = -normals[0].y * Environment.GRAVITY;
+          this.normal_acceleration = normals[0].Multpl(normal_forces[0]);
+        }
+        break;
+      case 2:
+        if (normals[0].x * normals[1].x < 0){
+          this.normal_acceleration = new Vector2(0, -Environment.GRAVITY);
+          normal_forces = [-normals[0].y * Environment.GRAVITY, -normals[1].y * Environment.GRAVITY];
+        } else {
+          var idx = 1 * (normals[1].y > normals[0].y);
+          normal_forces[idx] = -normals[idx].y * Environment.GRAVITY;
+          this.normal_acceleration = normals[idx].Multpl(normal_forces[idx]);
+          normal_forces[1 - idx] = 0;
+        }
+    }
+    var delta_angular = 0;
+    delta_velocity.x = 0;
+    delta_velocity.y = 0;
+    for (var i = 0; i < normals.length; i++){
+      if (normal_forces[i] == 0) continue;
+      var rel = new Vector2(this.velocity.x + normals[i].y * this.angular_velocity, this.velocity.y - this.piston_velocities[collision_indeces[i]] - normals[i].x * this.angular_velocity);
+      var tangent = rel.Sub(normals[i].Multpl(normals[i].Dot(rel)));
+      if (tangent.x == 0 && tangent.y == 0) continue;
+      tangent.Normalize();
+      var m = -rel.Dot(tangent);
+      if (Math.abs(m) <= normal_forces[i] * this.static_friction){
+        var d = m * this.radius * this.invInertia;
+        delta_angular += 0.9 * d * Math.sign(tangent.Crs(normals[i]));
+        delta_velocity.x += d * tangent.x;
+        delta_velocity.y += d * tangent.y;
+      } else {
+        var d = Math.sign(m) * normal_forces[i] * this.radius * this.dynamic_friction * this.invInertia;
+        delta_angular += 0.9 * d * Math.sign(tangent.Crs(normals[i]));
+        delta_velocity.x += d * tangent.x;
+        delta_velocity.y += d * tangent.y;
+      }
+    }
+    this.angular_velocity += delta_angular / normals.length;
+    this.velocity = this.velocity.Add(delta_velocity);
+  }
+
+  resetState(){
+    this.positions = new Array(this.num_agents).fill(0.5);
+    for (var i = 0; i < this.num_agents; i++) this.positions[i] = 0.2 + Math.random() * 0.6;
+    this.piston_velocities = new Array(this.num_agents).fill(0);
+    this.isBroken = new Array(this.num_agents).fill(false);
+    this.center = new Vector2(0.5 * Math.random() * 4.167 + this.radius, 0.8 + this.radius);
+    this.velocity = Vector2.zero;
+    this.orientation = new Matrix2();
+    this.angular_velocity = 0;
+    this.normal_acceleration = Vector2.zero;
+    this.is_break_moment = new Array(max_steps).fill(false);
+    for (var i = 0; i < this.num_breaks; i++){
+      var idx = Math.floor(Math.sq(Math.random()) * max_steps);
+      while (this.is_break_moment[idx]) idx = (idx + 1) % max_steps;
+      this.is_break_moment[idx] = true;
+    }
+  }
+
+  observation(index){
+    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y];
+    for (var i = index - INPUT_WINDOW; i <= index + INPUT_WINDOW; i++){
+      if (i < 0 || i >= this.positions.length){
+        observation.push(0, 0, 0);
+      } else {
+        observation.push(this.positions[i], this.isBroken[i] * 1, this.piston_velocities[i]);
+      }
+    }
+    return observation;
+  }
+
+  performActions(actions){
+    for (var i = 0; i < this.num_agents; i++) this.piston_velocities[i] = Action.vectors[actions[i]][0];
+  }
+
+  draw(win){
+    win.Clear();
+    win.ctx.fillStyle = "rgb(230, 230, 230)";
+    win.ctx.fillRect(0, 0, win.width, win.height);
+    for (var i = 0; i < this.num_agents; i++){
+      win.drawRect(this.gridWidth * i + 0.1, -0.1, this.gridWidth - 0.2, this.positions[i] - 0.2, "black");
+      win.drawRect(this.gridWidth * i + 0.05, this.positions[i] - 0.3, this.pistonWidth, 0.3, "black", this.isBroken[i] ? "red" : "lightblue");
+    }
+    win.drawCircle(this.center, this.radius, "black", "lightblue");
+    win.drawLine(this.center, new Vector2(this.center.x + this.orientation.a * this.radius, this.center.y + this.orientation.c * this.radius), "black");
+  }
+}
+class DQN_MARL_agents {
+  constructor(num_agents, input_window){
+    this.model = new NeuronModel(3 * (input_window * 2 + 1) + 4 + 2 * (num_agents - 1));
+    this.model.addLayer(16, "sigmoid", 2);
+    this.model.addLayer(Action.actions.length - 1, "identity");
+    this.target = this.model.copy();
+    this.num_agents = num_agents;
+  }
+
+  pickGreedy(environment, epsilon = 0){
+    var actions = [];
+    var action_inputs = [];
+    for (var i = 0; i < this.num_agents; i++){
+      if (environment.isBroken[i]){
+        actions[i] = Action.broken;
+      } else if (Math.random() < epsilon){
+        actions[i] = Action.actions[Math.floor(Math.random() * (Action.actions.length - 1))];
+      } else {
+        this.model.predict(environment.observation(i).concat(action_inputs));
+        actions[i] = Action.actions[this.model.argmax()];
+      }
+      action_inputs.push(1, ...Action.vectors[actions[i]]);
+    }
+    return actions;
+  }
+
+  backpropagate(transition, learning_rate, discount_factor){
+    var delta_sum = 0, count = 0;
+    var action_activation = [];
+    var i, delta;
+    for (i = 0; i < transition.i_max; i++){
+      if (transition.state.isBroken[i] || transition.state.isBroken[i + 1]) continue;
+      let value = this.model.predictAtIndex(transition.state.observation(i).concat(action_activation), transition.actions[i]);
+      action_activation.push(1, ...Action.vectors[transition.actions[i]]);
+      this.target.predict(transition.state.observation(i + 1).concat(action_activation));
+      delta = this.target.max() - value;
+      delta_sum += delta * delta;
+      count++;
+      this.model.backpropagateAdamAt(transition.actions[i], delta, learning_rate);
+    }
+    if (transition.state.isBroken[i] || transition.state.isBroken[0]) return count ? (delta_sum / count) : 1;
+    let value = this.model.predictAtIndex(transition.state.observation(i).concat(action_activation), transition.actions[i]);
+    this.target.predict(transition.next_state.observation(0));
+    delta = transition.reward + discount_factor * this.target.max() - value;
+    this.model.backpropagateAdamAt(transition.actions[i], delta, learning_rate);
+    return (delta_sum + delta * delta) / (count + 1);
+  }
+
+  learnFromYourMistakes(){
+    this.model.learnFromYourMistakes();
+  }
+
+  updateTargets(){
+    this.target.copyParametersFrom(this.model);
+  }
+
+  numParameters(){
+    return this.model.numParameters();
+  }
+
+  /*
+    <int> [ <neuronmodel> ]
+  */
+  writeText(){
+    return this.model.writeText();
+  }
+
+  exportAsTXT(filename){
+    var description = "#####\n";
+    description += "batch size: " + batchSize + '\n';
+    description += "max steps: " + max_steps + '\n';
+    description += "discount factor: " + gamma + '\n';
+    description += "decision interval: " + learning_rate + '\n';
+    description += "learning rate: " + decision_interval + '\n';
+    description += "dt: " + dt + '\n';
+    description += "num agents: " + NUM_AGENTS + '\n';
+    description += "input window: " + INPUT_WINDOW + '\n';
+    description += "(epsilonA, epsilonB, epsilon) = (" + EPSILON_A + ", " + EPSILON_B + ", " + EPSILON + ")\n";
+    exportTXT(description + "#####\n" + this.writeText(), filename);
+  }
+
+  static readText(str){
+    var output = new DQN_MARL_agents(NUM_AGENTS, 0, 0);
+    var startIdx = 0;
+    if (str.substr(0, 6) == "#####\n") startIdx = str.indexOf("#####\n", 5) + 6;
+    output.model = NeuronModel.readText(str, new Int(startIdx));
+    output.target = output.model.copy();
+    return output;
+  }
+}
+class Transition {
+  constructor(state, actions, next_state, reward, i_max){
+    this.state = state;
+    this.actions = actions;
+    this.next_state = next_state;
+    this.reward = reward;
+    this.i_max = i_max;
+  }
+}
+
+document.getElementById("import_NN").addEventListener('change', function() {
+  let files = this.files;
+  function readFile(index){
+    let fr = new FileReader();
+    fr.onload = function (e) {
+      var title = files[index].name;
+      if (!isNaN(title.substr(16, title.length - 20))) episode = title.substr(16, title.length - 20) * 1;
+      agent = DQN_MARL_agents.readText(e.target.result);
+      learn_state = false;
+      visualize = true;
+      interval2();
+    }
+    fr.readAsText(files[index]);
+  }
+  readFile(0);
+});
+function export_NN(){
+  agent.exportAsTXT("DQN_MARL_episode" + episode);
+}
+function exportTXT(txt, title){
+  let textFileAsBlob = new Blob([txt], { type: "text/plain" });
+  let downloadLink = document.createElement('a');
+  downloadLink.download = title + ".txt";
+  downloadLink.innerHTML = 'Download File';
+
+  if (window.webkitURL != null) {
+    downloadLink.href = window.webkitURL.createObjectURL(textFileAsBlob);
+  } else {
+    downloadLink.href = window.URL.createObjectURL(textFileAsBlob);
+    downloadLink.style.display = 'none';
+    document.body.appendChild(downloadLink);
+  }
+  downloadLink.click();
+}
+function export_checkpoint(){
+  if (saved_model_str.length) exportTXT(saved_model_str, "DQN_MARL_episode" + episode);
+}
+
+var agent = new DQN_MARL_agents(NUM_AGENTS, INPUT_WINDOW);
+var transition_buffer = [];
+var max_buffer_size = 10000;
+var batchSize = 1024;
+var max_steps = 25;
+var gamma = 0.99;
+var learning_rate = 2e-5;
+var decision_interval = 0.5;
+var dt = 0.02;
+var dataplot = new FancyDataPlotter(0, 0, 600, 300, "green");
+var dataplot2 = new FancyDataPlotter(0, 300, 600, 300, "blue");
+var env = new Environment(NUM_AGENTS, NUM_BREAKS); env.draw(win1);
+
+// for the checkpoint model
+var saved_model_str = "", last_checkpoint_reward = -Infinity;
+var checkpoint_reward_counter = 0;
+var save_every_x_episodes = 256;
+
+var colors = [];
+for (var i = 0; i < NUM_AGENTS; i++){
+  var color1 = new Vector3(187, 230, 244);
+  var color2 = new Vector3(0, 0, 128);
+  var color = color1.Add(color2.Sub(color1).Multpl(i / NUM_AGENTS));
+  colors[i] = "rgb("+color.x+","+color.y+","+color.z+")";
+}
+colors[colors.length - 1] = "orange";
+var dataplots = new MultyDataPlotter(NUM_AGENTS, 0, 0, 300, 300, colors);
+
+var EPSILON = 0.9;
+const EPSILON_A = Math.exp(-1 / 30000);
+const EPSILON_B = 0.03 * (1 - EPSILON_A);
+function epsilon() {
+  return EPSILON = EPSILON * EPSILON_A + EPSILON_B;
+}
+
+var visualize_on = true;
+var learn_state = false;
+function switch_state(){
+  learn_state = !learn_state;
+  if (learn_state){
+    last_time = performance.now();
+    interval();
+  }
+  else if (visualize_on){
+    env.resetState();
+    interval2();
+  }
+}
+function switch_visualize(){
+  visualize_on = !visualize_on;
+  if (visualize_on){
+    dataplots.draw(ctx2);
+    dataplot2.draw(ctx2);
+  }
+}
+
+function generate_transitions(){
+  env.resetState();
+  var cumulative_reward = 0, time = 0;
+  var step, end_episode = false;
+  var max_x = -Infinity;
+  var num_transitions = 0;
+  for (step = 0; step < max_steps && !end_episode; step++){
+    if (env.is_break_moment[step]){
+      var idx = Math.floor(Math.random() * env.num_agents);
+      while (env.isBroken[idx]) idx = (idx + 1) % env.num_agents;
+      env.isBroken[idx] = true;
+    }
+    var state = new State(env);
+    var actions = agent.pickGreedy(env, EPSILON);
+    env.performActions(actions);
+    var x = env.center.x, t;
+    max_x = Math.max(max_x, env.center.x);
+    for (t = 0; t < decision_interval; t += dt){
+      env.step(dt);
+      max_x = Math.max(max_x, env.center.x);
+      if (env.center.x <= win1.window.Xmin || env.center.x >= win1.window.Xmax){
+        end_episode = true;
+        break;
+      }
+    }
+    var reward = (t ? 2 * (env.center.x - x) / t : 0) - 1;
+    transition_buffer.push(new Transition(state, actions, new State(env), reward, NUM_AGENTS - 1));
+    num_transitions++;
+    time += t;
+    cumulative_reward += reward * Math.pow(gamma, time) * t;
+    if (transition_buffer.length > max_buffer_size) transition_buffer.shift();
+  }
+  var max_i = Math.min(env.num_agents - 1, Math.floor((max_x + env.radius) / env.gridWidth));
+  for (var i = transition_buffer.length - 1; i >= 0 && i >= transition_buffer.length - num_transitions; i--) transition_buffer[i].i_max = max_i;
+  return cumulative_reward;
+}
+
+function pickPreDesignedActions(environment, step){
+  var actions = [];
+  for (var i = 0; i < NUM_AGENTS; i++) actions.push(((i + 1) * env.gridWidth < env.center.x) ? 0 : 4);
+  return actions;
+}
+
+var episode = 0;
+var last_time, delta_time_measurement = 0;
+function interval(){
+  var commulative_reward = generate_transitions();
+  if (transition_buffer.length >= batchSize / 2){
+    var cost = 0;
+    for (var i = 0; i < batchSize; i++){
+      var transition = transition_buffer[Math.floor(Math.random() * transition_buffer.length)];
+      cost += agent.backpropagate(transition, learning_rate, gamma);
+    }
+    dataplot.Push(Math.log10(cost / batchSize));
+    dataplot2.Push(commulative_reward);
+    checkpoint_reward_counter += commulative_reward;
+    agent.learnFromYourMistakes();
+  }
+  episode++;
+  document.getElementById("p_0").innerHTML = "episode: " + episode;
+  document.getElementById("p_1").innerHTML = "epsilon: " + (Math.round(epsilon() * 1000) / 1000);
+  var new_time = performance.now();
+  delta_time_measurement = 0.9 * delta_time_measurement + 0.1 * (new_time - last_time);
+  document.getElementById("p_2").innerHTML = "episode/s: " + (Math.round(100000 / delta_time_measurement) / 100);
+  document.getElementById("p_3").innerHTML = "transitions/s: " + (Math.round(100000 * batchSize / delta_time_measurement) / 100);
+  last_time = new_time;
+  if (episode % 100 == 99) agent.updateTargets();
+  if (episode % save_every_x_episodes == (save_every_x_episodes - 1)){
+    if (checkpoint_reward_counter > last_checkpoint_reward){
+      last_checkpoint_reward = checkpoint_reward_counter;
+      dataplot2.verticals[0] = dataplot2.Xmax;
+      saved_model_str = agent.writeText();
+    }
+    checkpoint_reward_counter = 0;
+  }
+  if (visualize_on){
+    //dataplot.draw(ctx2);
+    dataplot.draw(ctx2);
+    dataplot2.draw(ctx2);
+  }
+  if (learn_state) setTimeout(function () { interval(); }, 1);
+}
+
+function interval2(t = 0, step = 0){
+  if (t >= decision_interval){
+    t = 0;
+    step++;
+    if (env.is_break_moment[step]){
+      var idx = Math.floor(Math.random() * env.num_agents);
+      while (env.isBroken[idx]) idx = (idx + 1) % env.num_agents;
+      env.isBroken[idx] = true;
+    }
+    //env.performActions(pickPreDesignedActions(env, 0));
+    env.performActions(agent.pickGreedy(env, 0));
+    if (step > max_steps || env.center.x <= win1.window.Xmin || env.center.x >= win1.window.Xmax){
+      env.resetState();
+      step = 0;
+    }
+  }
+  env.step(dt);
+  env.draw(win1);
+  if (!learn_state && visualize_on) setTimeout(function () { interval2(t + dt, step); }, 10);
+}
+
+var videoStream = canvas1.captureStream(30);
+var mediaRecorder = new MediaRecorder(videoStream);
+var chunks;
+mediaRecorder.ondataavailable = function(e) {
+  chunks.push(e.data);
+};
+mediaRecorder.onstop = function(e) {
+  var blob = new Blob(chunks, { 'type' : 'video/mp4' });
+  chunks = [];
+  let downloadLink = document.createElement('a');
+  downloadLink.download = "recording.mp4";
+  downloadLink.innerHTML = 'Download File';
+
+  if (window.webkitURL != null) {
+    downloadLink.href = window.webkitURL.createObjectURL(blob);
+  } else {
+    downloadLink.href = window.URL.createObjectURL(blob);
+    downloadLink.style.display = 'none';
+    document.body.appendChild(downloadLink);
+  }
+  downloadLink.click();
+};
+
+function record(elem){
+  if (elem.innerHTML == "start recording"){
+    elem.innerHTML = "stop recording";
+    chunks = [];
+    mediaRecorder.start();
+  } else {
+    elem.innerHTML = "start recording";
+    mediaRecorder.stop();
+  }
+}
+
+</script>
+</body>
+</html>
