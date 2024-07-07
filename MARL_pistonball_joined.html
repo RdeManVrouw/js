@@ -23,8 +23,10 @@ var ctx1 = canvas1.getContext("2d");
 var canvas2 = document.getElementById("map2");
 var ctx2 = canvas2.getContext("2d");
 
-const NUM_AGENTS = 8;
-const NUM_BREAKS = 1;
+var num_agents = window.prompt("number of agents", "8");
+var num_breaks = window.prompt("number of failures", "0");
+const NUM_AGENTS = (num_agents == null) ? 8 : num_agents * 1;
+const NUM_BREAKS = (num_breaks == null) ? 0 : num_breaks * 1;
 const win1 = new Window(ctx1, NUM_AGENTS * 40, 480, 0, NUM_AGENTS * 400 / 480, 0, 10);
 canvas1.width = NUM_AGENTS * 40;
 const INPUT_WINDOW = 2;
@@ -64,13 +66,14 @@ class State {
     this.center = environment.center.copy();
     this.velocity = environment.velocity.copy();
     this.gridWidth = environment.gridWidth;
+    this.angular_velocity = environment.angular_velocity;
     this.positions = [...environment.positions];
     this.piston_velocities = [...environment.piston_velocities];
     this.isBroken = [...environment.isBroken];
   }
 
   observation(index){
-    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y];
+    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y, this.angular_velocity];
     for (var i = index - INPUT_WINDOW; i <= index + INPUT_WINDOW; i++){
       if (i < 0 || i >= this.positions.length){
         observation.push(0, 0, 0);
@@ -339,7 +342,7 @@ class Environment {
   }
 
   observation(index){
-    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y];
+    var observation = [this.center.x - (index + 0.5) * this.gridWidth, this.center.y - this.positions[index], this.velocity.x, this.velocity.y, this.angular_velocity];
     for (var i = index - INPUT_WINDOW; i <= index + INPUT_WINDOW; i++){
       if (i < 0 || i >= this.positions.length){
         observation.push(0, 0, 0);
@@ -368,9 +371,9 @@ class Environment {
 }
 class DQN_MARL_agents {
   constructor(num_agents, input_window){
-    this.model = new NeuronModel(3 * (input_window * 2 + 1) + 4 + 2 * (num_agents - 1));
+    this.model = new NeuronModel(3 * (input_window * 2 + 1) + 5 + 2 * (num_agents - 1));
     this.model.addLayer(16, "sigmoid", 2);
-    this.model.addLayer(Action.actions.length - 1, "identity");
+    this.model.addLayer(Action.actions.length, "identity");
     this.target = this.model.copy();
     this.num_agents = num_agents;
   }
@@ -385,7 +388,7 @@ class DQN_MARL_agents {
         actions[i] = Action.actions[Math.floor(Math.random() * (Action.actions.length - 1))];
       } else {
         this.model.predict(environment.observation(i).concat(action_inputs));
-        actions[i] = Action.actions[this.model.argmax()];
+        actions[i] = Action.actions[this.model.argmax(this.model.layers.length - 1, Action.actions.length - 1)];
       }
       action_inputs.push(1, ...Action.vectors[actions[i]]);
     }
@@ -397,19 +400,25 @@ class DQN_MARL_agents {
     var action_activation = [];
     var i, delta;
     for (i = 0; i < transition.i_max; i++){
-      if (transition.state.isBroken[i] || transition.state.isBroken[i + 1]) continue;
       let value = this.model.predictAtIndex(transition.state.observation(i).concat(action_activation), transition.actions[i]);
       action_activation.push(1, ...Action.vectors[transition.actions[i]]);
       this.target.predict(transition.state.observation(i + 1).concat(action_activation));
-      delta = this.target.max() - value;
+      if (transition.state.isBroken[i + 1]){
+        delta = this.target.getActivation(Action.broken) - value;
+      } else {
+        delta = this.target.max(this.target.layers.length - 1, Action.actions.length) - value;
+      }
       delta_sum += delta * delta;
       count++;
       this.model.backpropagateAdamAt(transition.actions[i], delta, learning_rate);
     }
-    if (transition.state.isBroken[i] || transition.state.isBroken[0]) return count ? (delta_sum / count) : 1;
     let value = this.model.predictAtIndex(transition.state.observation(i).concat(action_activation), transition.actions[i]);
     this.target.predict(transition.next_state.observation(0));
-    delta = transition.reward + discount_factor * this.target.max() - value;
+    if (transition.next_state.isBroken[0]){
+        delta = transition.reward + discount_factor * this.target.getActivation(Action.broken) - value;
+    } else {
+        delta = transition.reward + discount_factor * this.target.max(this.target.layers.length - 1, Action.actions.length) - value;
+    }    
     this.model.backpropagateAdamAt(transition.actions[i], delta, learning_rate);
     return (delta_sum + delta * delta) / (count + 1);
   }
@@ -520,20 +529,10 @@ var env = new Environment(NUM_AGENTS, NUM_BREAKS); env.draw(win1);
 // for the checkpoint model
 var saved_model_str = "", last_checkpoint_reward = -Infinity;
 var checkpoint_reward_counter = 0;
-var save_every_x_episodes = 256;
-
-var colors = [];
-for (var i = 0; i < NUM_AGENTS; i++){
-  var color1 = new Vector3(187, 230, 244);
-  var color2 = new Vector3(0, 0, 128);
-  var color = color1.Add(color2.Sub(color1).Multpl(i / NUM_AGENTS));
-  colors[i] = "rgb("+color.x+","+color.y+","+color.z+")";
-}
-colors[colors.length - 1] = "orange";
-var dataplots = new MultyDataPlotter(NUM_AGENTS, 0, 0, 300, 300, colors);
+var save_every_x_episodes = 250;
 
 var EPSILON = 0.9;
-const EPSILON_A = Math.exp(-1 / 30000);
+const EPSILON_A = Math.exp(-1 / 10000);
 const EPSILON_B = 0.03 * (1 - EPSILON_A);
 function epsilon() {
   return EPSILON = EPSILON * EPSILON_A + EPSILON_B;
@@ -555,7 +554,7 @@ function switch_state(){
 function switch_visualize(){
   visualize_on = !visualize_on;
   if (visualize_on){
-    dataplots.draw(ctx2);
+    dataplot.draw(ctx2);
     dataplot2.draw(ctx2);
   }
 }
