@@ -532,7 +532,7 @@ var checkpoint_reward_counter = 0;
 var save_every_x_episodes = 250;
 
 var EPSILON = 0.9;
-const EPSILON_A = Math.exp(-1 / 10000);
+const EPSILON_A = Math.exp(-1 / 18000);
 const EPSILON_B = 0.03 * (1 - EPSILON_A);
 function epsilon() {
   return EPSILON = EPSILON * EPSILON_A + EPSILON_B;
