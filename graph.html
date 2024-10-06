@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<style>
+  div {
+    -webkit-user-select: none; /* Safari */
+    -ms-user-select: none; /* IE 10 and IE 11 */
+    user-select: none; /* Standard syntax */
+  }
+</style>
+<body onresize="resize()" style="overflow:hidden">
+  <canvas id="map1" style="position:absolute;left:0px;top:0px;z-index:-1"></canvas>
+  <input id="param_input" type="text" style="position:absolute;right:10px;top:10px;font-family:monospace;font-size:20px" placeholder="add parameter"></input>
+  <script src="expr_compiler.js"></script>
+  <script src="camera_window.js"></script>
+<script>
+var canvas1 = document.getElementById("map1"), ctx1 = canvas1.getContext("2d");
+canvas1.width = window.innerWidth - 1;
+canvas1.height = window.innerHeight - 1;
+
+var win = new Window(ctx1, canvas1.width, canvas1.height, -10, 10, -10, 10);
+win.zSquare();
+const function_colors = ["blue", "red", "green", "yellow", "orange", "navy", "black", "purple"];
+
+function resize(){
+  var factorx = (window.innerWidth - 1) / canvas1.width;
+  var factory = (window.innerHeight - 1) / canvas1.height;
+  canvas1.width = window.innerWidth - 1;
+  canvas1.height = window.innerHeight - 1;
+  win.width = canvas1.width;
+  win.height = canvas1.height;
+  win.window.Xmin *= factorx;
+  win.window.Xmax *= factorx;
+  win.window.Ymin *= factory;
+  win.window.Ymax *= factory;
+  win.zSquare();
+  renderFrame();
+}
+
+class CenterTracker {
+  constructor(n){
+    this.iuu_sum = new Matrix2(0, 0, 0, 0);
+    this.iuu = [];
+    this.iuup_sum = Vector2.zero;
+    this.iuup = [];
+    this.prevPoint = Vector2.zero;
+    this.n = n;
+    this.direction = Vector2.zero;
+
+    this.center = Vector2.zero;
+    this.velocity = 0;
+    this.radius = 0;
+  }
+
+  pushPoint(x, y){
+    if (this.prevPoint.x == 0 && this.prevPoint.y == 0){
+      this.prevPoint.x = x;
+      this.prevPoint.y = y;
+      return;
+    }
+    var u = new Vector2(y - this.prevPoint.y, this.prevPoint.x - x).normalized;
+    var iuu = new Matrix2(1 + u.x * u.x, u.x * u.y, u.x * u.y, 1 + u.y * u.y);
+    this.iuu.push(iuu);
+    this.iuu_sum.Accum(iuu);
+    var iuup = iuu.vProd(new Vector2(0.5 * (this.prevPoint.x + x), 0.5 * (this.prevPoint.y + y)));
+    this.iuup.push(iuup);
+    this.iuup_sum.x += iuup.x;
+    this.iuup_sum.y += iuup.y;
+    this.direction = new Vector2(x - this.prevPoint.x, y - this.prevPoint.y);
+    this.prevPoint.x = x;
+    this.prevPoint.y = y;
+    if (this.iuup.length == this.n + 1){
+      iuu = this.iuu.shift();
+      this.iuu_sum.Decline(iuu);
+      iuup = this.iuup.shift();
+      this.iuup_sum.x -= iuup.x;
+      this.iuup_sum.y -= iuup.y;
+    }
+  }
+
+  update(){
+    if (this.iuu.length < 3 || this.iuu_sum.det == 0) return false;
+    this.center = this.iuu_sum.inversed.vProd(this.iuup_sum);
+    this.velocity = this.direction.magnitude * Math.sign(this.direction.x * (this.center.y - this.prevPoint.y) - (this.center.x - this.prevPoint.x) * this.direction.y);
+    this.radius = this.center.Dist(this.prevPoint);
+    if (isNaN(this.velocity) || isNaN(this.radius)){
+      this.iuu_sum = new Matrix2(0, 0, 0, 0);
+      this.iuu = [];
+      this.iuup_sum = Vector2.zero;
+      this.iuup = [];
+      this.prevPoint = Vector2.zero;
+      this.direction = Vector2.zero;
+      return false;
+    }
+    return true;
+  }
+}
+
+var textbox_stack = [];
+var textbox_activation = [];
+function pushTextbox(){
+  var div = document.createElement("div");
+  div.style = "position:absolute;left:10px;top:"+ (textbox_stack.length * 46.4 + 10) +"px;width:340px;background-color:lightgray;font-family:monospace;font-size:20px;border:10px solid lightgray;margin:2px 2px 2px 2px;border-radius:4px";
+  div.innerHTML = "y" + textbox_stack.length + "(x) ";
+  var text = document.createElement("input");
+  text.style = "font-family:monospace;font-size:20px;border:0";
+  text.type = "text";
+  text.id = textbox_stack.length + "_textbox";
+  text.oninput = function (){
+    edited(this.value, this.id.substr(0, this.id.indexOf("_")) * 1);
+  };
+  text.onkeydown = function (e){
+    var idx = this.id.substr(0, this.id.indexOf("_")) * 1;
+    if (e.keyCode == 38 && idx > 0) document.getElementById((idx - 1) + "_textbox").focus();
+    if (e.keyCode == 40 && idx < textbox_stack.length - 1) document.getElementById((idx + 1) + "_textbox").focus();
+  }
+  div.appendChild(text);
+  var bol = document.createElement("div");
+  bol.style = "width:24px;height:24px;border-radius:12px;float:right;background-color:" + function_colors[textbox_stack.length];
+  bol.id = textbox_stack.length + "_bol";
+  bol.onclick = function (){
+    var idx = this.id.substr(0, this.id.indexOf("_")) * 1;
+    textbox_activation[idx] = !textbox_activation[idx];
+    this.style.backgroundColor = textbox_activation[idx] ? function_colors[idx] : "gray";
+    renderFrame();
+  }
+  div.appendChild(bol);
+  document.body.appendChild(div);
+  textbox_stack.push(div);
+  textbox_activation.push(true);
+}
+function popTextbox(){
+  textbox_stack.pop().remove();
+  textbox_activation.pop();
+}
+pushTextbox();
+
+document.getElementById("param_input").onkeydown = function (e){
+  this.value = this.value.replaceAll(' ', '').replaceAll('\t', '');
+  var idx = new Ptr(), ptr = new Ptr();
+  if (e.keyCode == 13 && this.value != "x" && acceptIdentifier(this.value, idx, ptr) && pushParambox(ptr.i)) this.value = "";
+}
+
+var parameter_list = ["pi", "e"];
+var parameter_dict = {"pi": Math.PI, "e": Math.E};
+var parambox_stack = [];
+var tracker = null, selected_parameter, tracker_parameter_speed = 0;
+function pushParambox(variable){
+  if (parameter_list.includes(variable)) return false;
+  parameter_list.push(variable);
+  parameter_dict[variable] = 0;
+  var div = document.createElement("div");
+  div.style = "position:absolute;right:10px;top:"+ (parambox_stack.length * 46.4 + 40) +"px;background-color:lightgray;font-family:monospace;font-size:20px;border:10px solid lightgray;margin:2px 2px 2px 2px;border-radius:4px";
+  div.innerHTML = variable;
+  div.onmousedown = function (){
+    tracker = new CenterTracker(50);
+    selected_parameter = this.children[0].name;
+  }
+  var text = document.createElement("input");
+  text.style = "font-family:monospace;font-size:20px;border:0;margin-left:13px;margin-right:13px";
+  text.type = "text";
+  text.id = parambox_stack.length + "_paramtextbox";
+  text.name = variable;
+  text.value = 0;
+  text.oninput = function (){
+    parameter_dict[this.name] = this.value * 1;
+    renderFrame();
+  };
+  text.onkeydown = function (e){
+    var idx = this.id.substr(0, this.id.indexOf("_")) * 1;
+    if (e.keyCode == 38 && idx > 0) document.getElementById((idx - 1) + "_paramtextbox").focus();
+    if (e.keyCode == 40 && idx < parambox_stack.length - 1) document.getElementById((idx + 1) + "_paramtextbox").focus();
+  }
+  div.appendChild(text);
+  var bol = document.createElement("div");
+  bol.style = "width:24px;height:24px;border-radius:12px;float:right;background-color:red";
+  bol.id = parambox_stack.length + "_bol";
+  bol.onclick = function (){
+    removeParambox(this.parentElement);
+  }
+  div.appendChild(bol);
+  document.body.appendChild(div);
+  parambox_stack.push(div);
+  renderFrame();
+  if (!is_active_loop_param) move_paramBox_loop();
+  return true;
+}
+function removeParambox(elem){
+  for (var i = 0; i < parambox_stack.length; ++i){
+    if (parambox_stack[i] == elem){
+      var new_param_dict = {};
+      for (const [key, value] of Object.entries(parameter_dict)){
+        if (key != elem.children[0].name) new_param_dict[key] = value;
+      }
+      parameter_dict = new_param_dict;
+      parambox_stack.splice(i, 1)[0].remove();
+      parameter_list.splice(i, 1);
+      for (var j = 0; j < parambox_stack.length; ++j) parambox_stack[j].style.top = (j * 46.4 + 40) + "px";
+      renderFrame();
+      return;
+    }
+  }
+}
+
+function edited(text, textbox_idx){
+  while (textbox_stack.length > 1 && textbox_stack[textbox_stack.length - 2].children[0].value.length == 0) popTextbox();
+  if (textbox_stack[textbox_stack.length - 1].children[0].value.length && textbox_stack.length < function_colors.length) pushTextbox();
+  renderFrame();
+}
+
+var expr_system;
+var functions;
+function renderFrame(changed_equations = true){
+  win.Clear();
+  win.drawLine(new Vector2(0, win.window.Ymin), new Vector2(0, win.window.Ymax));
+  win.drawLine(new Vector2(win.window.Xmin, 0), new Vector2(win.window.Xmax, 0));
+  var p = Math.round(0.43429448190325176 * Math.log(0.7 * (win.window.Xmax - win.window.Xmin))) - 1;
+  var dxy = Math.pow(10, p);
+  for (var x = Math.floor(win.window.Xmin / dxy); x <= Math.ceil(win.window.Xmax / dxy); ++x)
+    win.drawLine(new Vector2(x * dxy, -0.08 * dxy), new Vector2(x * dxy, 0.08 * dxy), "black", 1);
+  for (var y = Math.floor(win.window.Ymin / dxy); y <= Math.ceil(win.window.Ymax / dxy); ++y)
+    win.drawLine(new Vector2(-0.08 * dxy, y * dxy), new Vector2(0.08 * dxy, y * dxy), "black", 1);
+  win.ctx.font = "15px Arial";
+  win.ctx.textAlign = "center";
+  win.ctx.fillStyle = "black";
+  var loc = win.Vector2ToPxl(dxy, 0.08 * dxy);
+  win.ctx.fillText((Math.abs(p) < 4) ? dxy : "e" + p, loc.x, loc.y - 2);
+
+  if (!changed_equations){
+    expr_system.drawGraphs(win, textbox_activation);
+    return;
+  }
+
+  var strs = [], function_names = [];
+  for (var i = 0; i < textbox_stack.length; ++i){
+    strs.push(textbox_stack[i].children[0].value);
+    function_names.push("y" + i);
+  }
+  expr_system = ExprSystem.compileExprSystem(strs, function_names, function_colors, parameter_dict);
+  if (expr_system != null){
+    expr_system.drawGraphs(win, textbox_activation);
+  }
+}
+renderFrame();
+
+var mousedown = false, prevPos;
+canvas1.onmousedown = function (e){
+  mousedown = true;
+  prevPos = win.Vector2FromPxl(e.pageX, e.pageY);
+}
+canvas1.onmousemove = function (e){
+  if (!mousedown) return;
+  var newPos = win.Vector2FromPxl(e.pageX, e.pageY);
+  win.window.Xmax += prevPos.x - newPos.x;
+  win.window.Xmin += prevPos.x - newPos.x;
+  win.window.Ymax += prevPos.y - newPos.y;
+  win.window.Ymin += prevPos.y - newPos.y;
+  renderFrame(false);
+  prevPos = win.Vector2FromPxl(e.pageX, e.pageY);
+}
+canvas1.onmouseup = function (){
+  mousedown = false;
+}
+canvas1.onwheel = function (e){
+  var factor = 1 + 0.1 * Math.sign(e.deltaY);
+  var pos = win.Vector2FromPxl(e.pageX, e.pageY);
+  var new_Xmin = pos.x - factor * (pos.x - win.window.Xmin);
+  var new_Ymin = pos.y - factor * (pos.y - win.window.Ymin);
+  win.window.Xmax = (win.window.Xmax - win.window.Xmin) * factor + new_Xmin;
+  win.window.Ymax = (win.window.Ymax - win.window.Ymin) * factor + new_Ymin;
+  win.window.Ymin = new_Ymin;
+  win.window.Xmin = new_Xmin;
+  renderFrame(false);
+}
+document.body.onkeydown = function (e){
+  if (e.target != document.body) return;
+  for (const t of textbox_stack){
+    if (t.children[0].value.length == 0){
+      t.children[0].focus();
+      moveBoxes(10);
+      return;
+    }
+  }
+}
+
+var boxesPosition = 10;
+var boxesTarget = 10, is_active_loop = false;
+function moveBoxes(target){
+  if (boxesPosition == (boxesTarget = target)) return;
+  if (!is_active_loop) move_boxes_loop();
+}
+function move_boxes_loop(){
+  is_active_loop = true;
+  boxesPosition += 0.1 * (boxesTarget - boxesPosition);
+  if (Math.abs(boxesPosition - boxesTarget) < 2) boxesPosition = boxesTarget;
+  for (const box of textbox_stack) box.style.left = boxesPosition + "px";
+  if (boxesPosition != boxesTarget) setTimeout(function () { move_boxes_loop(); }, 10);
+  else is_active_loop = false;
+}
+
+var paramBoxPosition = 10;
+var paramBoxTarget = 10, is_active_loop_param = false;
+function moveparamBox(target){
+  if (paramBoxPosition == (paramBoxTarget = target)) return;
+  if (!is_active_loop_param) move_paramBox_loop();
+}
+function move_paramBox_loop(){
+  is_active_loop_param = true;
+  paramBoxPosition += 0.1 * (paramBoxTarget - paramBoxPosition);
+  if (Math.abs(paramBoxPosition - paramBoxTarget) < 2) paramBoxPosition = paramBoxTarget;
+  for (const box of parambox_stack) box.style.right = paramBoxPosition + "px";
+  if (paramBoxPosition != paramBoxTarget) setTimeout(function () { move_paramBox_loop(); }, 10);
+  else is_active_loop_param = false;
+}
+
+document.body.onmousemove = function (e){
+  if (e.pageX <= boxesPosition + 360){
+    moveBoxes(10);
+  } else {
+    for (const box of textbox_stack) if (box.children[0] == document.activeElement) return;
+    moveBoxes(-320);
+  }
+  if (tracker != null){
+    tracker.pushPoint(e.pageX, e.pageY);
+    if (tracker.update()){
+      parameter_dict[selected_parameter] += tracker.velocity * 1e-6 * tracker.radius * tracker.radius;
+      for (const elem of parambox_stack) if (elem.children[0].name == selected_parameter){
+        elem.children[0].value = parameter_dict[selected_parameter];
+        break;
+      }
+      renderFrame();
+    }
+    return;
+  }
+  if (e.pageX >= window.innerWidth - (paramBoxPosition + 360)){
+    moveparamBox(10);
+  } else {
+    for (const box of parambox_stack) if (box.children[0] == document.activeElement) return;
+    moveparamBox(-290);
+  }
+}
+document.body.onmouseup = function (){
+  tracker = null;
+  tracker_parameter_speed = 0;
+  selected_parameter = "";
+}
+
+</script>
+</body>
+</html>

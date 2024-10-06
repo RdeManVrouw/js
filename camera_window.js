@@ -1,4 +1,3 @@
-/*
 class Vector2 {
   constructor(x, y){
     this.x = x;
@@ -44,7 +43,6 @@ class Vector2 {
     return new Vector2(0, 0);
   }
 }
-*/
 
 class Polygon {
   constructor(verteces, color = "brown"){
@@ -188,8 +186,25 @@ class Matrix2 {
     this.d = d;
   }
 
+  Accum(m){
+    this.a += m.a;
+    this.b += m.b;
+    this.c += m.c;
+    this.d += m.d;
+  }
+  Decline(m){
+    this.a -= m.a;
+    this.b -= m.b;
+    this.c -= m.c;
+    this.d -= m.d;
+  }
+
   Multpl(x){
     return new Matrix2(this.a * x, this.b * x, this.c * x, this.d * x);
+  }
+
+  Dist(v){
+    return Math.hypot(this.x - v.x, this.y - v.y);
   }
 
   vProd(v){
@@ -209,7 +224,7 @@ class Matrix2 {
     this.a = new_a;
     this.b = new_b;
     this.c = new_c;
-    this.d = new_d;      
+    this.d = new_d;
   }
 
   get det(){
@@ -220,8 +235,8 @@ class Matrix2 {
     return new Matrix2(this.d, -this.b, -this.c, this.a).Multpl(1 / this.det);
   }
 
-  static Angle(phi){
-    var c = Math.cos(phi), s = Math.sin(phi);
+  static Angle(phi, r = 1){
+    var c = Math.cos(phi) * r, s = Math.sin(phi) * r;
     return new Matrix2(c, -s, s, c);
   }
 }
@@ -321,8 +336,8 @@ class Window {
     if (fill != null) this.ctx.fill();
     this.ctx.stroke();
   }
-  drawText(x, y, str, color = "black"){
-    this.ctx.font = "15px Arial";
+  drawText(x, y, str, color = "black", size = 15){
+    this.ctx.font = size + "px Arial";
     this.ctx.textAlign = "center";
     this.ctx.fillStyle = color;
     var loc = this.Vector2ToPxl(x, y);
@@ -344,6 +359,17 @@ class Window {
   }
   Vector2ToPxl(x, y){
     return new Vector2(Math.floor((x - this.window.Xmin)/(this.window.Xmax - this.window.Xmin)*this.width), Math.floor((y - this.window.Ymax)/(this.window.Ymin - this.window.Ymax)*this.height));
+  }
+  zSquare(){
+    if (this.width / this.height > (this.window.Xmax - this.window.Xmin) / (this.window.Ymax - this.window.Ymin)){
+      var dx = this.width / this.height * (this.window.Ymax - this.window.Ymin) - (this.window.Xmax - this.window.Xmin);
+      this.window.Xmax += 0.5 * dx;
+      this.window.Xmin -= 0.5 * dx;
+    } else {
+      var dy = this.height / this.width * (this.window.Xmax - this.window.Xmin) - (this.window.Ymax - this.window.Ymin);
+      this.window.Ymax += 0.5 * dy;
+      this.window.Ymin -= 0.5 * dy;
+    }
   }
 }
 class Camera {
